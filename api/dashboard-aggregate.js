@@ -1,9 +1,7 @@
-// /api/dashboard-tree.js
-// Tree-aggregatie met DISTINCT t_id (geen lead_id).
-// Default grouping: day > affiliate_id > offer_id
-// Query params:
-//   offer_id, campaign_id, affiliate_id, sub_id, date_from, date_to
-//   order=day,affiliate,offer  (andere volgordes toegestaan)
+// /api/dashboard-aggregate.js
+// Drill-down aggregatie met DISTINCT t_id (geen lead_id).
+// Default: day > affiliate > offer. Wisselbaar via ?order=day,affiliate,offer
+// Filters: offer_id, campaign_id, affiliate_id, sub_id, date_from, date_to  (date_to is inclusief)
 
 const DIRECTUS_URL = (process.env.DIRECTUS_URL || '').replace(/\/+$/, '');
 const DIRECTUS_TOKEN = process.env.DIRECTUS_TOKEN || '';
@@ -14,15 +12,37 @@ function setCors(res) {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 }
 
+// YYYY-MM-DD in Europe/Amsterdam (bucket key)
 function dateKeyNL(value) {
   const d = new Date(value);
-  // "YYYY-MM-DD" in Europe/Amsterdam
   return new Intl.DateTimeFormat('sv-SE', {
     timeZone: 'Europe/Amsterdam',
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
   }).format(d);
+}
+
+// Inclusieve einddatum: geef volgende dag terug (YYYY-MM-DD)
+function nextDayStr(dStr) {
+  const d = new Date(dStr);
+  d.setDate(d.getDate() + 1);
+  return d.toISOString().slice(0, 10);
+}
+
+// Robuuste parser voor kosten (accepteert "€0,75", "0,75", "0.75", 0.75)
+function toNumber(v) {
+  if (v == null) return 0;
+  if (typeof v === 'number') return Number.isFinite(v) ? v : 0;
+  let s = String(v).trim();
+  // verwijder currency/whitespace
+  s = s.replace(/[€\s]/g, '');
+  // als geen punt maar wel komma → gebruik komma als decimaal
+  if (s.indexOf('.') === -1 && s.indexOf(',') > -1) s = s.replace(',', '.');
+  // verwijder overgebleven thousand-seps
+  s = s.replace(/(,|\.) (?=\d{3}\b)/g, '');
+  const n = Number(s);
+  return Number.isFinite(n) ? n : 0;
 }
 
 function getGroupKey(row, level) {
@@ -54,13 +74,13 @@ export default async function handler(req, res) {
       order = 'day,affiliate,offer',
     } = req.query;
 
-    // We halen ruwe records op (geen aggregates). Alleen velden die we nodig hebben.
+    // Ruwe records ophalen; alleen velden die we nodig hebben
     const p = new URLSearchParams();
     p.append('limit', '-1');
     p.append('fields', ['created_at', 't_id', 'affiliate_id', 'offer_id', 'cost'].join(','));
 
     if (date_from) p.append('filter[created_at][_gte]', date_from);
-    if (date_to)   p.append('filter[created_at][_lte]', date_to);
+    if (date_to)   p.append('filter[created_at][_lt]', nextDayStr(date_to)); // <-- inclusief
     if (offer_id)     p.append('filter[offer_id][_eq]', offer_id);
     if (campaign_id)  p.append('filter[campaign_id][_eq]', campaign_id);
     if (affiliate_id) p.append('filter[affiliate_id][_eq]', affiliate_id);
@@ -72,21 +92,20 @@ export default async function handler(req, res) {
     if (!r.ok) throw new Error(JSON.stringify(j));
     const rows = Array.isArray(j.data) ? j.data : [];
 
-    // Bepaal volgorde van niveaus
+    // Volgorde van niveaus bepalen
     const levels = order.split(',').map(s => s.trim()).map(s => {
       if (s === 'affiliate_id') return 'affiliate';
       if (s === 'offer_id') return 'offer';
-      return s; // 'day' of 'affiliate' of 'offer'
+      return s; // 'day' | 'affiliate' | 'offer'
     });
     const [L1, L2, L3] = levels;
 
-    // We bouwen een tree: L1 -> L2 -> L3
-    // We tellen DISTINCT t_id op elk niveau (als t_id ontbreekt: niet meetellen)
-    const L1map = new Map(); // key -> { key, label, leadsSet:Set, cost:number, children:Map }
+    // Tree bouwen: L1 -> L2 -> L3
+    const L1map = new Map(); // key -> {label, leadsSet:Set, cost:number, children:Map}
 
     for (const row of rows) {
       const tId = (row?.t_id && String(row.t_id).trim()) || null;
-      const cost = Number(row?.cost ?? 0) || 0;
+      const cost = toNumber(row?.cost);
 
       const k1 = getGroupKey(row, L1);
       const n1 = L1map.get(k1) || { key: k1, label: getGroupLabel(k1, L1), leadsSet: new Set(), cost: 0, children: new Map() };
@@ -113,10 +132,9 @@ export default async function handler(req, res) {
       L1map.set(k1, n1);
     }
 
-    // Converteer naar arrays met leads (set.size) en sorteer logisch
+    // Netjes naar arrays + sortering
     const sortFn = (a, b) => {
       if (L1 === 'day') return a.key < b.key ? 1 : -1; // dagen desc
-      // anders alfabetisch/nummeriek
       return ('' + a.key).localeCompare('' + b.key, 'nl', { numeric: true });
     };
 
@@ -128,9 +146,7 @@ export default async function handler(req, res) {
           leads: n.leadsSet ? n.leadsSet.size : 0,
           cost: n.cost,
         };
-        if (n.children && n.children.size) {
-          out.children = toArray(n.children, level);
-        }
+        if (n.children && n.children.size) out.children = toArray(n.children, level);
         return out;
       }).sort(sortFn);
     };
@@ -139,7 +155,7 @@ export default async function handler(req, res) {
 
     return res.status(200).json({ data: { order: levels, tree } });
   } catch (e) {
-    console.error('[dashboard-tree] error:', e);
+    console.error('[dashboard-aggregate] error:', e);
     return res.status(500).json({ error: String(e?.message || e) });
   }
 }
