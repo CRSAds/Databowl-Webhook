@@ -5,49 +5,64 @@
   <title>Lead Dashboard</title>
   <link rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/jquery.dataTables.min.css" />
   <style>
+    :root { color-scheme: light dark; }
     body { font-family: Arial, sans-serif; padding: 20px; }
-    h1 { margin-bottom: 20px; }
-    .filters { margin-bottom: 20px; display:flex; gap:16px; flex-wrap:wrap; }
+    h1 { margin-bottom: 16px; }
+    .filters { margin-bottom: 20px; display:flex; gap:16px; flex-wrap:wrap; align-items: end; }
+    .filters label { display:flex; flex-direction:column; font-size: 12px; gap:6px; }
+    .filters select, .filters input[type="date"] { padding: 6px 8px; min-width: 160px; }
+    button#apply { height: 36px; padding: 0 14px; cursor: pointer; }
     table { width: 100%; }
+    .totals { margin-top: 10px; font-weight: 600; }
   </style>
 </head>
 <body>
   <h1>Lead Dashboard</h1>
 
   <div class="filters">
-    <label>Offer ID:
+    <label>Offer ID
       <select id="offerFilter"><option value="">Alle</option></select>
     </label>
-    <label>Campaign ID:
+    <label>Campaign ID
       <select id="campaignFilter"><option value="">Alle</option></select>
     </label>
-    <label>Affiliate ID:
+    <label>Affiliate ID
       <select id="affiliateFilter"><option value="">Alle</option></select>
     </label>
-    <label>Sub ID:
+    <label>Sub ID
       <select id="subFilter"><option value="">Alle</option></select>
     </label>
-    <label>Vanaf:
+    <label>Vanaf
       <input type="date" id="fromDate" />
     </label>
-    <label>Tot:
+    <label>Tot
       <input type="date" id="toDate" />
     </label>
     <button id="apply">Toepassen</button>
   </div>
 
   <table id="leadsTable" class="display"></table>
+  <div class="totals" id="totals"></div>
 
   <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
   <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
   <script>
-    // Jouw Vercel base URL (zelfde origin als de pagina zelf; leeg laten werkt ook)
-    const BASE = ''; // '' betekent: zelfde domein, bv https://databowl-webhook.vercel.app
+    // Zelfde origin als deze pagina (https://databowl-webhook.vercel.app)
+    const BASE = '';
+
+    // Helpers
+    const toNL = (yyyy_mm_dd) => {
+      // yyyy-mm-dd → nl-NL datum
+      const [y,m,d] = String(yyyy_mm_dd).split('-').map(Number);
+      if (!y || !m || !d) return yyyy_mm_dd;
+      return new Date(Date.UTC(y, m-1, d)).toLocaleDateString('nl-NL');
+    };
 
     async function fetchFilters() {
       const r = await fetch(`${BASE}/api/dashboard-filters`);
-      const j = await r.json();
-      const { offer_ids, campaign_ids, affiliate_ids, sub_ids } = j.data;
+      if (!r.ok) throw new Error('Kon filters niet laden');
+      const { data } = await r.json();
+      const { offer_ids, campaign_ids, affiliate_ids, sub_ids } = data;
 
       const fill = (id, values) => {
         const sel = document.getElementById(id);
@@ -75,27 +90,28 @@
       if (v('toDate'))          params.append('date_to', v('toDate'));
 
       const r = await fetch(`${BASE}/api/dashboard-aggregate?` + params.toString());
-      if (!r.ok) throw new Error('Failed to fetch aggregate');
-      const j = await r.json();
-      return j.data || [];
+      if (!r.ok) throw new Error('Kon aggregatie niet laden');
+      const { data } = await r.json(); // [{ date: "YYYY-MM-DD", leads: <int>, cost: <number> }]
+      return data || [];
     }
 
-    function toNLDate(d) {
-      // r.created_at kan string/datetime zijn; we tonen dag
-      const dt = new Date(d);
-      if (isNaN(dt)) return d;
-      return dt.toLocaleDateString('nl-NL');
+    function renderTotals(rows) {
+      const totalLeads = rows.reduce((s, r) => s + Number(r.leads || 0), 0);
+      const totalCost  = rows.reduce((s, r) => s + Number(r.cost  || 0), 0);
+      document.getElementById('totals').textContent =
+        `Totaal: ${totalLeads.toLocaleString('nl-NL')} leads • Kosten € ${totalCost.toFixed(2)}`;
     }
 
     async function loadTable() {
       const rows = await fetchAggregate();
 
-      // Directus aggregate response: elke rij heeft created_at + countDistinct.t_id + sum.cost
       const tableData = rows.map(r => ({
-        date: toNLDate(r.created_at),
-        leads: r.countDistinct?.t_id || 0,
-        cost: r.sum?.cost ? Number(r.sum.cost).toFixed(2) : '0.00'
+        date: toNL(r.date),               // r.date is al per dag (YYYY-MM-DD)
+        leads: Number(r.leads || 0),
+        cost:  Number(r.cost  || 0).toFixed(2)
       }));
+
+      renderTotals(rows);
 
       if ($.fn.dataTable.isDataTable('#leadsTable')) {
         const t = $('#leadsTable').DataTable();
@@ -113,12 +129,26 @@
       }
     }
 
+    // Events
     document.getElementById('apply').addEventListener('click', loadTable);
 
-    // init
+    // Init (optioneel: standaard zet "Vanaf" op 30 dagen terug)
+    (function setDefaultDates() {
+      const toISO = (d) => d.toISOString().slice(0,10);
+      const now = new Date();
+      const past = new Date(); past.setDate(now.getDate() - 30);
+      document.getElementById('fromDate').value = toISO(past);
+      document.getElementById('toDate').value = toISO(now);
+    })();
+
     (async () => {
-      await fetchFilters();
-      await loadTable();
+      try {
+        await fetchFilters();
+        await loadTable();
+      } catch (e) {
+        console.error(e);
+        alert('Kon dashboard data niet laden.');
+      }
     })();
   </script>
 </body>
