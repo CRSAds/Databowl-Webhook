@@ -18,7 +18,7 @@ const FIELD_IDS = {
   affiliate_id: '1684',
   supplier_id_via_data: '1685',
   sub_id: null,
-  t_id: 1322,
+  t_id: '1322',
 };
 
 function makeKey(obj) {
