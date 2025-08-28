@@ -6,6 +6,7 @@ const DIRECTUS_URL = (process.env.DIRECTUS_URL || '').replace(/\/+$/, '');
 const DIRECTUS_TOKEN = process.env.DIRECTUS_TOKEN || '';
 const SHARED_SECRET = process.env.DATABOWL_WEBHOOK_SECRET || '';
 
+// === Utils ===
 const normMoney = (v) => (v == null || v === '' ? null : Number.parseFloat(v).toFixed(2));
 const asISOFromUnix = (s) => {
   const n = Number(s);
@@ -18,9 +19,22 @@ const FIELD_IDS = {
   affiliate_id: '1684',
   supplier_id_via_data: '1685',
   sub_id: null,
-  t_id: '1322',
+  t_id: '1322', // f_1322_transaction_id → Directus t_id
 };
 
+// statusId → label
+const STATUS_MAP = {
+  '1': 'Received',
+  '2': 'Rejected',
+  '3': 'Flagged',
+  '4': 'Pending',
+  '5': 'Quarantine',
+  '6': 'Accepted',
+  '7': 'Client Rejected',
+  '8': 'Sale',
+};
+
+// Idempotency key
 function makeKey(obj) {
   const h = crypto.createHash('sha256');
   h.update(
@@ -35,6 +49,7 @@ function makeKey(obj) {
   return h.digest('hex');
 }
 
+// Mapping Databowl payload → Directus item
 function mapPayload(body) {
   const b = body || {};
 
@@ -52,7 +67,9 @@ function mapPayload(body) {
     const sub_id = FIELD_IDS.sub_id ? data[FIELD_IDS.sub_id] ?? null : null;
     const t_id = FIELD_IDS.t_id ? data[FIELD_IDS.t_id] ?? null : null;
 
-    const status = p.statusId != null ? String(p.statusId) : 'unknown';
+    const statusId = p.statusId != null ? String(p.statusId) : null;
+    const status = statusId ? (STATUS_MAP[statusId] || `Unknown (${statusId})`) : 'unknown';
+
     const created_at = p.receivedAt ? asISOFromUnix(p.receivedAt) : new Date().toISOString();
     const revenue = normMoney(p.normalRevenue ?? p.revenue);
     const cost = normMoney(p.normalCost ?? p.cost);
@@ -65,7 +82,7 @@ function mapPayload(body) {
 
     return {
       lead_id,
-      status,
+      status, // leesbaar label
       revenue,
       cost,
       currency,
@@ -76,7 +93,7 @@ function mapPayload(body) {
       sub_id,
       t_id,
       created_at,
-      raw: { original: b, email_hash, status_id: p.statusId ?? null },
+      raw: { original: b, email_hash, status_id: statusId }, // numerieke code blijft beschikbaar
     };
   }
 
@@ -86,7 +103,13 @@ function mapPayload(body) {
   const fin = b.finance || {};
   const meta = b.meta || b.metadata || {};
 
-  const status = msg.status ?? b.status ?? ld.status ?? 'unknown';
+  const statusRaw = msg.status ?? b.status ?? ld.status ?? null;
+  // Als numeriek (string/number) → map, anders gebruik raw tekst
+  const status =
+    statusRaw != null && String(Number(statusRaw)) === String(statusRaw)
+      ? STATUS_MAP[String(statusRaw)] || `Unknown (${String(statusRaw)})`
+      : statusRaw || 'unknown';
+
   const created_at = msg.created_at ?? ld.created_at ?? b.created_at ?? new Date().toISOString();
 
   const revenue = normMoney(fin.revenue ?? b.revenue ?? ld.revenue);
@@ -98,7 +121,8 @@ function mapPayload(body) {
   const supplier_id = ld.supplier_id ?? b.supplier_id ?? meta.supplier_id ?? null;
   const affiliate_id = ld.affiliate_id ?? b.affiliate_id ?? meta.affiliate_id ?? null;
   const sub_id = ld.sub_id ?? ld.subid ?? b.sub_id ?? meta.sub_id ?? null;
-  const t_id = ld.t_id ?? b.t_id ?? meta.t_id ?? null;
+  const t_id = (FIELD_IDS.t_id && (ld[FIELD_IDS.t_id] || (b.data && b.data[FIELD_IDS.t_id])))
+    ?? ld.t_id ?? b.t_id ?? meta.t_id ?? null;
 
   const lead_id = ld.id ?? b.lead_id ?? msg.lead_id ?? null;
 
@@ -124,6 +148,7 @@ function mapPayload(body) {
   };
 }
 
+// Directus create (met unique event_key afhandeling)
 async function createEvent(event) {
   const r = await fetch(`${DIRECTUS_URL}/items/Databowl_lead_events`, {
     method: 'POST',
@@ -136,14 +161,14 @@ async function createEvent(event) {
 
   if (r.ok) return { created: await r.json() };
 
-  // Directus unieke constraint: code "RECORD_NOT_UNIQUE" (400)
+  // Unieke constraint? → skip
   let txt = await r.text();
   try {
     const j = JSON.parse(txt);
     const nonUnique = j?.errors?.some((e) => e?.extensions?.code === 'RECORD_NOT_UNIQUE');
     if (nonUnique) return { skipped: true };
   } catch {
-    // ignore JSON parse errors
+    // ignore
   }
   throw new Error(`Directus create ${r.status}: ${txt}`);
 }
@@ -181,7 +206,7 @@ export default async function handler(req, res) {
 
     // Idempotency via unieke kolom event_key (zonder read)
     const event_key = makeKey(event);
-    event.event_key = event_key; // <-- nieuw top-level veld
+    event.event_key = event_key; // <-- vereist veld in Directus, Unique
     event.raw = { ...(event.raw || {}), key: event_key };
 
     const result = await createEvent(event);
