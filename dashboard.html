@@ -29,20 +29,18 @@
     .loader.show { display:flex; }
 
     table { width:100%; }
+    #leadsTable td, #leadsTable th { border-top: 1px solid #e8edf3; } /* dunne lichtgrijze rij-lijnen */
     .totals { margin-top: 10px; font-weight: 600; }
 
-    /* Pastel tinten per niveau */
-    .level1 > td { background: #f6f9ff; }           /* licht pastel blauw */
-    .level1.shown > td { background: #eef3ff; }
-    .level2-row > td { background: #f7f7f9; }       /* licht grijs */
-    .level3-row > td { background: #eef6ff; }       /* andere lichtblauw tint */
-
-    table.details { border-collapse: collapse; margin: 8px 0 0; width:100%; }
-    table.details thead th { text-align:left; padding: 6px 8px; font-weight: 600; }
-    table.details tbody td { padding: 6px 8px; }
+    /* Pastel tinten per niveau (allemaal als echte tabelrijen) */
+    .level1 td { background: #f6f9ff; }           /* licht pastel blauw */
+    .level1.shown td { background: #eef3ff; }
+    .level2 td { background: #f7f7f9; }           /* licht grijs */
+    .level3 td { background: #eef6ff; }           /* andere lichtblauw tint */
 
     .control { cursor: pointer; font-weight: 600; white-space: nowrap; }
     .arrow { display:inline-block; width:1em; text-align:center; margin-right:4px; }
+
     .empty { padding: 16px; font-style: italic; opacity:.8; }
   </style>
 </head>
@@ -163,17 +161,17 @@
       }));
     }
 
-    function childTableHeader(L1, L2, L3) {
-      return `
-        <thead>
-          <tr>
-            <th>${(L1 === 'day') ? 'Datum' : (L1 === 'affiliate' ? 'Affiliate ID' : 'Offer ID')}</th>
-            <th>${(L2 === 'day') ? 'Datum' : (L2 === 'affiliate' ? 'Affiliate ID' : 'Offer ID')}</th>
-            <th>${(L3 === 'day') ? 'Datum' : (L3 === 'affiliate' ? 'Affiliate ID' : 'Offer ID')}</th>
-            <th>Aantal Leads</th>
-            <th>Kosten</th>
-          </tr>
-        </thead>`;
+    function makeTd(text, cls='') {
+      const td = document.createElement('td');
+      if (cls) td.className = cls;
+      td.textContent = text ?? '';
+      return td;
+    }
+    function makeTdHTML(html, cls='') {
+      const td = document.createElement('td');
+      if (cls) td.className = cls;
+      td.innerHTML = html;
+      return td;
     }
 
     async function loadTable() {
@@ -219,10 +217,9 @@
         }
 
         const table = $('#leadsTable').DataTable();
-        // stylen per level
         $('#leadsTable tbody tr').addClass('level1');
 
-        // klik: uitklappen naar L2
+        // klik: uitklappen naar L2 (we voegen echte tabelrijen toe onder de parent)
         $('#leadsTable tbody').off('click').on('click', 'td.control', function () {
           const tr = $(this).closest('tr');
           const row = table.row(tr);
@@ -230,83 +227,102 @@
 
           if (!rowData.children || !rowData.children.length) return;
 
-          if (row.child.isShown()) {
-            row.child.hide();
+          const isOpen = tr.hasClass('shown');
+          if (isOpen) {
+            // verwijder alle direct onderliggende level2/level3 rijen die bij deze parent horen (tot we een volgende level1 tegenkomen)
+            let next = tr.next();
+            while (next.length && !next.hasClass('level1')) {
+              const tmp = next.next();
+              next.remove();
+              next = tmp;
+            }
             tr.removeClass('shown');
             $(this).find('.arrow').text('▶');
-          } else {
-            const kids = sortChildren(rowData.children.slice());
+            return;
+          }
 
-            const childTable = document.createElement('table');
-            childTable.className = 'details';
-            childTable.innerHTML = childTableHeader(L1, L2, L3);
-            const tb = document.createElement('tbody');
+          // eerst sluiten wat eventueel openstaat vlak eronder
+          let next = tr.next();
+          while (next.length && !next.hasClass('level1')) {
+            const tmp = next.next();
+            next.remove();
+            next = tmp;
+          }
 
-            kids.forEach(k => {
-              const tr2 = document.createElement('tr');
-              tr2.className = 'level2-row';
-              const hasChildren = k.children && k.children.length;
-              const arrow = hasChildren ? '<span class="arrow">▶</span>' : '<span class="arrow"></span>';
+          tr.addClass('shown');
+          $(this).find('.arrow').text('▼');
 
-              tr2.innerHTML = `
-                <td></td>
-                <td class="control">${arrow}${k.label}</td>
-                <td></td>
-                <td>${k.leads}</td>
-                <td>${toMoney(k.cost)}</td>
-              `;
-              tr2.dataset.hasChildren = hasChildren ? '1' : '0';
-              tr2._children = sortChildren((k.children || []).slice());
-              tb.appendChild(tr2);
-            });
+          const children = sortChildren(rowData.children.slice());
 
-            childTable.appendChild(tb);
-            row.child(childTable).show();
-            tr.addClass('shown');
-            $(this).find('.arrow').text('▼');
+          // Voeg per child één level2 rij toe (5 kolommen, netjes onder de koppen)
+          children.forEach((c) => {
+            const rowEl = document.createElement('tr');
+            rowEl.className = 'level2';
+            // kolom 1: leeg (dag staat in parent)
+            rowEl.appendChild(makeTd(''));
+            // kolom 2: affiliate (met pijltje indien weer kinderen)
+            const arrow = (c.children && c.children.length) ? '<span class="arrow">▶</span>' : '<span class="arrow"></span>';
+            rowEl.appendChild(makeTdHTML(`${arrow}${c.label}`, 'control'));
+            // kolom 3: leeg (offer komt in level3)
+            rowEl.appendChild(makeTd(''));
+            // kolom 4: leads
+            rowEl.appendChild(makeTd(String(c.leads)));
+            // kolom 5: cost
+            rowEl.appendChild(makeTd(toMoney(c.cost)));
 
-            // tweede niveau (naar L3)
-            $(childTable).on('click', 'td.control', function () {
-              const tr2 = $(this).closest('tr');
-              const hasChildren = tr2.get(0).dataset.hasChildren === '1';
-              const children = tr2.get(0)._children || [];
+            // koppel data voor next level
+            rowEl.dataset.hasChildren = (c.children && c.children.length) ? '1' : '0';
+            rowEl._children = sortChildren((c.children || []).slice());
+
+            // insert onder parent
+            $(rowEl).insertAfter(tr);
+
+            // klik op level2 → toon/verborgen level3
+            $(rowEl).off('click').on('click', 'td.control', function (e) {
+              e.stopPropagation(); // niet bubbelen naar level1 klik
+              const thisTr = $(this).closest('tr');
+              const hasChildren = thisTr.get(0).dataset.hasChildren === '1';
+              const kids = thisTr.get(0)._children || [];
               if (!hasChildren) return;
 
-              if (tr2.next().hasClass('sub-open')) {
-                tr2.next().remove();
+              const open = thisTr.hasClass('shown');
+              if (open) {
+                // verwijder opvolgende level3-rijen tot we een rij tegenkomen die geen level3 is
+                let nx = thisTr.next();
+                while (nx.length && nx.hasClass('level3')) {
+                  const t2 = nx.next();
+                  nx.remove();
+                  nx = t2;
+                }
+                thisTr.removeClass('shown');
                 $(this).find('.arrow').text('▶');
-              } else {
-                const subRow = document.createElement('tr');
-                subRow.className = 'sub-open';
-                const td = document.createElement('td');
-                td.colSpan = 5;
-
-                const subTable = document.createElement('table');
-                subTable.className = 'details';
-                subTable.innerHTML = childTableHeader(L1, L2, L3);
-                const stb = document.createElement('tbody');
-
-                children.forEach(c => {
-                  const tr3 = document.createElement('tr');
-                  tr3.className = 'level3-row';
-                  tr3.innerHTML = `
-                    <td></td>
-                    <td></td>
-                    <td>${c.label}</td>
-                    <td>${c.leads}</td>
-                    <td>${toMoney(c.cost)}</td>
-                  `;
-                  stb.appendChild(tr3);
-                });
-
-                subTable.appendChild(stb);
-                td.appendChild(subTable);
-                subRow.appendChild(td);
-                tr2.after(subRow);
-                $(this).find('.arrow').text('▼');
+                return;
               }
+
+              // eerst bestaande level3 direct onder deze rij sluiten
+              let nx = thisTr.next();
+              while (nx.length && nx.hasClass('level3')) {
+                const t2 = nx.next();
+                nx.remove();
+                nx = t2;
+              }
+
+              thisTr.addClass('shown');
+              $(this).find('.arrow').text('▼');
+
+              kids.forEach(k => {
+                const r3 = document.createElement('tr');
+                r3.className = 'level3';
+                // kolommen: [leeg, leeg, offer, leads, cost]
+                r3.appendChild(makeTd(''));
+                r3.appendChild(makeTd(''));
+                r3.appendChild(makeTd(k.label));
+                r3.appendChild(makeTd(String(k.leads)));
+                r3.appendChild(makeTd(toMoney(k.cost)));
+                $(r3).insertAfter(thisTr);
+              });
             });
-          }
+          });
         });
 
         const now = new Date();
