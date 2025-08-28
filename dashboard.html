@@ -29,14 +29,14 @@
     .loader.show { display:flex; }
 
     table { width:100%; }
-    #leadsTable td, #leadsTable th { border-top: 1px solid #e8edf3; } /* dunne lichtgrijze rij-lijnen */
+    #leadsTable td, #leadsTable th { border-top: 1px solid #e8edf3; }
     .totals { margin-top: 10px; font-weight: 600; }
 
-    /* Pastel tinten per niveau (allemaal als echte tabelrijen) */
-    .level1 td { background: #f6f9ff; }           /* licht pastel blauw */
+    /* Pastel niveaus als echte tabelrijen */
+    .level1 td { background: #f6f9ff; }
     .level1.shown td { background: #eef3ff; }
-    .level2 td { background: #f7f7f9; }           /* licht grijs */
-    .level3 td { background: #eef6ff; }           /* andere lichtblauw tint */
+    .level2 td { background: #f7f7f9; }
+    .level3 td { background: #eef6ff; }
 
     .control { cursor: pointer; font-weight: 600; white-space: nowrap; }
     .arrow { display:inline-block; width:1em; text-align:center; margin-right:4px; }
@@ -79,11 +79,13 @@
   <div class="sortbox">
     Sorteren op:
     <select id="sortBy">
-      <option value="leads" selected>Aantal Leads</option>
+      <option value="header" selected>Volg tabelheader</option>
+      <option value="leads">Aantal Leads</option>
       <option value="cost">Kosten</option>
     </select>
     <select id="sortDir">
-      <option value="desc" selected>Desc</option>
+      <option value="header" selected>Volg tabelheader</option>
+      <option value="desc">Desc</option>
       <option value="asc">Asc</option>
     </select>
   </div>
@@ -142,13 +144,48 @@
         `Totaal: ${totalLeads.toLocaleString('nl-NL')} leads • Kosten € ${toMoney(totalCost)}`;
     }
 
-    function sortChildren(rows) {
-      const by = document.getElementById('sortBy').value;     // 'leads' | 'cost'
-      const dir = document.getElementById('sortDir').value;   // 'asc' | 'desc'
-      rows.sort((a, b) => {
-        const av = Number(a[by] || 0), bv = Number(b[by] || 0);
-        return dir === 'asc' ? av - bv : bv - av;
-      });
+    /* === sort helpers die ALTIJD de header van de tabel volgen === */
+    function getHeaderOrder(table) {
+      const order = table ? table.order() : [];
+      return Array.isArray(order) && order.length ? order[0] : [3, 'desc']; // default: leads desc
+    }
+    function labelCompareFactory(dir) {
+      const mult = dir === 'asc' ? 1 : -1;
+      return (a, b) => {
+        const av = (a.label ?? '').toString();
+        const bv = (b.label ?? '').toString();
+        const an = Number(av), bn = Number(bv);
+        if (!Number.isNaN(an) && !Number.isNaN(bn)) return (an - bn) * mult;
+        return av.localeCompare(bv, 'nl', { numeric: true }) * mult;
+      };
+    }
+    function sortChildrenByHeader(rows, table) {
+      // Optionele overrides (dropdowns). Staan standaard op "header".
+      const overrideBy  = document.getElementById('sortBy').value;
+      const overrideDir = document.getElementById('sortDir').value;
+
+      let colIdx, dir;
+      if (overrideBy === 'header' && overrideDir === 'header') {
+        [colIdx, dir] = getHeaderOrder(table); // 0:Dag, 1:Affiliate, 2:Offer, 3:Leads, 4:Kosten
+      } else {
+        if (overrideBy === 'leads')  colIdx = 3;
+        else if (overrideBy === 'cost') colIdx = 4;
+        else colIdx = getHeaderOrder(table)[0];
+        dir = (overrideDir === 'header') ? getHeaderOrder(table)[1] : overrideDir;
+      }
+
+      const mult = dir === 'asc' ? 1 : -1;
+
+      if (colIdx === 3) { // leads
+        rows.sort((a,b) => ((Number(a.leads||0) - Number(b.leads||0)) * mult));
+        return rows;
+      }
+      if (colIdx === 4) { // cost
+        rows.sort((a,b) => ((Number(a.cost||0) - Number(b.cost||0)) * mult));
+        return rows;
+      }
+      // anders op label van het kind (affiliate/offer)
+      rows.sort(labelCompareFactory(dir));
       return rows;
     }
 
@@ -219,6 +256,11 @@
         const table = $('#leadsTable').DataTable();
         $('#leadsTable tbody tr').addClass('level1');
 
+        // Re-render bij sorteren op header zodat child-sort altijd header volgt
+        table.off('order.dt').on('order.dt', () => {
+          loadTable(); // simpelste en betrouwbaarste; klapstates gaan terug naar dicht
+        });
+
         // klik: uitklappen naar L2 (we voegen echte tabelrijen toe onder de parent)
         $('#leadsTable tbody').off('click').on('click', 'td.control', function () {
           const tr = $(this).closest('tr');
@@ -229,7 +271,7 @@
 
           const isOpen = tr.hasClass('shown');
           if (isOpen) {
-            // verwijder alle direct onderliggende level2/level3 rijen die bij deze parent horen (tot we een volgende level1 tegenkomen)
+            // verwijder alle direct onderliggende level2/level3 rijen tot volgende level1
             let next = tr.next();
             while (next.length && !next.hasClass('level1')) {
               const tmp = next.next();
@@ -241,7 +283,7 @@
             return;
           }
 
-          // eerst sluiten wat eventueel openstaat vlak eronder
+          // eerst opruimen onder parent (indien eerder open)
           let next = tr.next();
           while (next.length && !next.hasClass('level1')) {
             const tmp = next.next();
@@ -252,15 +294,15 @@
           tr.addClass('shown');
           $(this).find('.arrow').text('▼');
 
-          const children = sortChildren(rowData.children.slice());
+          const children = sortChildrenByHeader(rowData.children.slice(), table);
 
-          // Voeg per child één level2 rij toe (5 kolommen, netjes onder de koppen)
+          // Voeg per child één level2 rij toe (5 kolommen)
           children.forEach((c) => {
             const rowEl = document.createElement('tr');
             rowEl.className = 'level2';
             // kolom 1: leeg (dag staat in parent)
             rowEl.appendChild(makeTd(''));
-            // kolom 2: affiliate (met pijltje indien weer kinderen)
+            // kolom 2: affiliate (met pijltje indien kinderen)
             const arrow = (c.children && c.children.length) ? '<span class="arrow">▶</span>' : '<span class="arrow"></span>';
             rowEl.appendChild(makeTdHTML(`${arrow}${c.label}`, 'control'));
             // kolom 3: leeg (offer komt in level3)
@@ -270,16 +312,15 @@
             // kolom 5: cost
             rowEl.appendChild(makeTd(toMoney(c.cost)));
 
-            // koppel data voor next level
+            // data voor niveau 3
             rowEl.dataset.hasChildren = (c.children && c.children.length) ? '1' : '0';
-            rowEl._children = sortChildren((c.children || []).slice());
+            rowEl._children = sortChildrenByHeader((c.children || []).slice(), table);
 
-            // insert onder parent
             $(rowEl).insertAfter(tr);
 
             // klik op level2 → toon/verborgen level3
             $(rowEl).off('click').on('click', 'td.control', function (e) {
-              e.stopPropagation(); // niet bubbelen naar level1 klik
+              e.stopPropagation();
               const thisTr = $(this).closest('tr');
               const hasChildren = thisTr.get(0).dataset.hasChildren === '1';
               const kids = thisTr.get(0)._children || [];
@@ -287,7 +328,6 @@
 
               const open = thisTr.hasClass('shown');
               if (open) {
-                // verwijder opvolgende level3-rijen tot we een rij tegenkomen die geen level3 is
                 let nx = thisTr.next();
                 while (nx.length && nx.hasClass('level3')) {
                   const t2 = nx.next();
@@ -299,7 +339,7 @@
                 return;
               }
 
-              // eerst bestaande level3 direct onder deze rij sluiten
+              // sluit bestaande level3 direct onder deze rij
               let nx = thisTr.next();
               while (nx.length && nx.hasClass('level3')) {
                 const t2 = nx.next();
@@ -310,7 +350,10 @@
               thisTr.addClass('shown');
               $(this).find('.arrow').text('▼');
 
-              kids.forEach(k => {
+              // altijd sorteren volgens header, vlak vóór render
+              const sortedKids = sortChildrenByHeader(kids.slice(), table);
+
+              sortedKids.forEach(k => {
                 const r3 = document.createElement('tr');
                 r3.className = 'level3';
                 // kolommen: [leeg, leeg, offer, leads, cost]
