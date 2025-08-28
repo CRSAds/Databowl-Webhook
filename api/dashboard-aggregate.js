@@ -1,4 +1,10 @@
 // /api/dashboard-aggregate.js
+// Doel: per DAG aggregeren met:
+// - leads = # distinct (t_id if present else lead_id)
+// - cost  = som(cost)
+// Filtering op offer/campaign/affiliate/sub en date-range
+// Alles server-side om CORS & "t_id ontbreekt" issues te voorkomen.
+
 const DIRECTUS_URL = (process.env.DIRECTUS_URL || '').replace(/\/+$/, '');
 const DIRECTUS_TOKEN = process.env.DIRECTUS_TOKEN || '';
 
@@ -8,17 +14,16 @@ function setCors(res) {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 }
 
-// Maak een YYYY-MM-DD key in Europe/Amsterdam
+// Maak YYYY-MM-DD in Europe/Amsterdam
 function dateKeyNL(value) {
   const d = new Date(value);
-  // 'sv-SE' geeft altijd YYYY-MM-DD terug; zet expliciet NL-tijdzone
-  const s = new Intl.DateTimeFormat('sv-SE', {
+  // 'sv-SE' geeft YYYY-MM-DD terug, met vaste volgorde (handig om later te sorteren)
+  return new Intl.DateTimeFormat('sv-SE', {
     timeZone: 'Europe/Amsterdam',
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
   }).format(d); // bv "2025-08-28"
-  return s;
 }
 
 export default async function handler(req, res) {
@@ -29,11 +34,10 @@ export default async function handler(req, res) {
   try {
     const { offer_id, campaign_id, affiliate_id, sub_id, date_from, date_to } = req.query;
 
+    // We halen RUWE records op (geen aggregate), alleen de velden die we nodig hebben
     const p = new URLSearchParams();
-    // Haal ruwe rijen op per timestamp en tel alvast distinct t_id en som cost per timestamp
-    p.append('aggregate[countDistinct]', 't_id');
-    p.append('aggregate[sum]', 'cost');
-    p.append('groupBy[]', 'created_at');
+    p.append('limit', '-1');
+    p.append('fields', ['created_at', 't_id', 'lead_id', 'cost'].join(','));
 
     if (date_from) p.append('filter[created_at][_gte]', date_from);
     if (date_to)   p.append('filter[created_at][_lte]', date_to);
@@ -49,20 +53,27 @@ export default async function handler(req, res) {
 
     const rows = Array.isArray(j.data) ? j.data : [];
 
-    // Bucket op dag (Europe/Amsterdam) en sommeer
-    const buckets = new Map();
+    // Bucket per dag en tel distinct(t_id || lead_id), som(cost)
+    const buckets = new Map(); // key "YYYY-MM-DD" -> { date, leadsSet:Set, cost:number }
     for (const row of rows) {
-      const key = dateKeyNL(row.created_at); // "YYYY-MM-DD"
-      const leads = Number(row?.countDistinct?.t_id || 0);
-      const cost  = Number(row?.sum?.cost || 0);
-      const prev  = buckets.get(key) || { date: key, leads: 0, cost: 0 };
-      prev.leads += leads;
-      prev.cost  += cost;
-      buckets.set(key, prev);
+      const key = dateKeyNL(row.created_at);
+      const b = buckets.get(key) || { date: key, leadsSet: new Set(), cost: 0 };
+
+      // Unieke sleutel voor lead: t_id als die er is, anders lead_id als fallback
+      const leadKey = (row?.t_id && String(row.t_id).trim()) || (row?.lead_id && String(row.lead_id).trim());
+      if (leadKey) b.leadsSet.add(leadKey);
+
+      const costNum = Number(row?.cost ?? 0);
+      if (!Number.isNaN(costNum)) b.cost += costNum;
+
+      buckets.set(key, b);
     }
 
-    // Sorteer aflopend op datum
-    const aggregated = Array.from(buckets.values()).sort((a, b) => (a.date < b.date ? 1 : -1));
+    // Maak output en sorteer op datum aflopend
+    const aggregated = Array
+      .from(buckets.values())
+      .map(b => ({ date: b.date, leads: b.leadsSet.size, cost: b.cost }))
+      .sort((a, b) => (a.date < b.date ? 1 : -1));
 
     return res.status(200).json({ data: aggregated });
   } catch (e) {
