@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="UTF-8" />
+  <title>Lead Dashboard</title>
+  <link rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/jquery.dataTables.min.css" />
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; }
+    h1 { margin-bottom: 20px; }
+    .filters { margin-bottom: 20px; }
+    .filters label { margin-right: 20px; }
+    table { width: 100%; border-collapse: collapse; }
+  </style>
+</head>
+<body>
+  <h1>Lead Dashboard</h1>
+  <div class="filters">
+    <label>Offer ID: 
+      <select id="offerFilter"><option value="">Alle</option></select>
+    </label>
+    <label>Campaign ID: 
+      <select id="campaignFilter"><option value="">Alle</option></select>
+    </label>
+    <label>Affiliate ID: 
+      <select id="affiliateFilter"><option value="">Alle</option></select>
+    </label>
+    <label>Sub ID: 
+      <select id="subFilter"><option value="">Alle</option></select>
+    </label>
+  </div>
+
+  <table id="leadsTable" class="display"></table>
+
+  <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+  <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
+  <script>
+    const DIRECTUS_URL = "https://cms.core.909play.com";
+    const DIRECTUS_TOKEN = "YOUR_STATIC_READONLY_TOKEN"; // maak hiervoor een nieuwe Directus rol/token met alleen read-rechten
+
+    async function fetchData(filters={}) {
+      const params = new URLSearchParams();
+      params.append("aggregate[countDistinct]", "t_id");
+      params.append("aggregate[sum]", "cost");
+      params.append("groupBy[]", "created_at");
+
+      // filters (offer_id, campaign_id, affiliate_id, sub_id)
+      for (const [key, value] of Object.entries(filters)) {
+        if (value) params.append(`filter[${key}][_eq]`, value);
+      }
+
+      const res = await fetch(`${DIRECTUS_URL}/items/Databowl_lead_events?${params}`, {
+        headers: { Authorization: `Bearer ${DIRECTUS_TOKEN}` }
+      });
+      const data = await res.json();
+      return data.data;
+    }
+
+    async function loadTable() {
+      const filters = {
+        offer_id: document.getElementById("offerFilter").value,
+        campaign_id: document.getElementById("campaignFilter").value,
+        affiliate_id: document.getElementById("affiliateFilter").value,
+        sub_id: document.getElementById("subFilter").value,
+      };
+
+      const rows = await fetchData(filters);
+
+      const tableData = rows.map(r => ({
+        date: new Date(r.created_at).toLocaleDateString("nl-NL"),
+        leads: r.countDistinct?.t_id || 0,
+        cost: r.sum?.cost ? parseFloat(r.sum.cost).toFixed(2) : 0
+      }));
+
+      if ($.fn.dataTable.isDataTable("#leadsTable")) {
+        const table = $("#leadsTable").DataTable();
+        table.clear().rows.add(tableData).draw();
+      } else {
+        $("#leadsTable").DataTable({
+          data: tableData,
+          columns: [
+            { title: "Datum", data: "date" },
+            { title: "Aantal Leads", data: "leads" },
+            { title: "Kosten", data: "cost" }
+          ]
+        });
+      }
+    }
+
+    // listeners
+    ["offerFilter","campaignFilter","affiliateFilter","subFilter"].forEach(id => {
+      document.getElementById(id).addEventListener("change", loadTable);
+    });
+
+    // eerste load
+    loadTable();
+  </script>
+</body>
+</html>
