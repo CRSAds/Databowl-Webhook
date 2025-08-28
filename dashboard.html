@@ -7,15 +7,34 @@
   <style>
     :root { color-scheme: light dark; }
     body { font-family: Arial, sans-serif; padding: 20px; }
-    h1 { margin-bottom: 16px; }
-    .filters { margin-bottom: 20px; display:flex; gap:16px; flex-wrap:wrap; align-items: end; }
+    h1 { margin-bottom: 12px; }
+
+    .filters { margin-bottom: 14px; display:flex; gap:16px; flex-wrap:wrap; align-items:flex-end; }
     .filters label { display:flex; flex-direction:column; font-size: 12px; gap:6px; }
-    .filters select, .filters input[type="date"] { padding: 6px 8px; min-width: 160px; }
-    button#apply, button.group-open { height: 36px; padding: 0 14px; cursor: pointer; }
+    .filters select, .filters input[type="date"] { padding: 6px 8px; min-width: 150px; }
+    button#apply { height: 36px; padding: 0 14px; cursor: pointer; }
+
+    .sortbox { display:flex; gap:8px; align-items:center; margin: 4px 0 14px; font-size: 14px; }
+    .sortbox select { padding: 6px 8px; }
+
     table { width: 100%; }
     .totals { margin-top: 10px; font-weight: 600; }
-    .details { background: rgba(0,0,0,0.03); }
-    .control { cursor: pointer; font-weight: 600; }
+
+    /* Pastel tinten per niveau */
+    .level1 > td { background: #f6f9ff; }           /* licht pastel blauw */
+    .level1.shown > td { background: #eef3ff; }
+    .level2-row > td { background: #f7f7f9; }       /* licht grijs */
+    .level2-row.open + tr.sub-open td { background: #f1f1f6; }
+    .level3-row > td { background: #eef6ff; }       /* nog iets andere lichtblauw tint */
+
+    /* details tabellen in child rows */
+    table.details { border-collapse: collapse; margin: 8px 0 0; }
+    table.details thead th { text-align:left; padding: 6px 8px; font-weight: 600; }
+    table.details tbody td { padding: 6px 8px; }
+
+    /* pijltje */
+    .control { cursor: pointer; font-weight: 600; white-space: nowrap; }
+    .arrow { display:inline-block; width:1em; text-align:center; margin-right:4px; }
   </style>
 </head>
 <body>
@@ -50,6 +69,18 @@
     <button id="apply">Toepassen</button>
   </div>
 
+  <div class="sortbox">
+    Sorteren op:
+    <select id="sortBy">
+      <option value="leads" selected>Aantal Leads</option>
+      <option value="cost">Kosten</option>
+    </select>
+    <select id="sortDir">
+      <option value="desc" selected>Desc</option>
+      <option value="asc">Asc</option>
+    </select>
+  </div>
+
   <table id="leadsTable" class="display"></table>
   <div class="totals" id="totals"></div>
 
@@ -57,8 +88,6 @@
   <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
   <script>
     const BASE = ''; // zelfde origin
-
-    // ---------- helpers ----------
     const toMoney = (n) => Number(n || 0).toFixed(2);
 
     async function fetchFilters() {
@@ -86,9 +115,9 @@
       params.append('order', v('groupOrder') || 'day,affiliate,offer');
 
       const r = await fetch(`${BASE}/api/dashboard-aggregate?` + params.toString());
-      if (!r.ok) throw new Error('Kon tree niet laden');
+      if (!r.ok) throw new Error('Kon data niet laden');
       const { data } = await r.json();
-      return data; // { order: [...], tree: [...] }
+      return data; // { order:[...], tree:[...] }
     }
 
     function renderTotals(flat) {
@@ -98,29 +127,62 @@
         `Totaal: ${totalLeads.toLocaleString('nl-NL')} leads • Kosten € ${toMoney(totalCost)}`;
     }
 
-    // Flatten top-level for DataTable; we voegen zelf child-tables toe bij klik.
+    function sortChildren(rows) {
+      const by = document.getElementById('sortBy').value;     // 'leads' | 'cost'
+      const dir = document.getElementById('sortDir').value;   // 'asc' | 'desc'
+      rows.sort((a, b) => {
+        const av = Number(a[by] || 0), bv = Number(b[by] || 0);
+        return dir === 'asc' ? av - bv : bv - av;
+      });
+      return rows;
+    }
+
     function flattenTop(tree) {
+      // Zet top-level om naar een rij met 5 kolommen: Day | Affiliate | Offer | Leads | Cost
       return tree.map(n => ({
-        key: n.key,
-        label: n.label,
-        leads: n.leads,
-        cost: n.cost,
+        level: 1,
+        day: n.label, affiliate: '', offer: '',
+        leads: n.leads, cost: n.cost,
         children: n.children || []
       }));
     }
 
-    function buildChildTable(rows, levelName) {
-      // eenvoudige HTML-tabel voor child-rijen
+    function buildChildTable(rows, levelFrom, levelTo, levelToName) {
+      // rows: array nodes voor het volgende niveau
+      sortChildren(rows);
       const t = document.createElement('table');
-      t.className = 'display details';
+      t.className = 'details';
       t.style.width = '100%';
       const thead = document.createElement('thead');
-      thead.innerHTML = `<tr><th>${levelName}</th><th>Aantal Leads</th><th>Kosten</th></tr>`;
+      thead.innerHTML = `<tr>
+        <th>${levelFrom === 'day' ? 'Datum' : (levelFrom === 'affiliate' ? 'Affiliate ID' : 'Offer ID')}</th>
+        <th>${levelTo ? (levelTo === 'day' ? 'Datum' : (levelTo === 'affiliate' ? 'Affiliate ID' : 'Offer ID')) : ''}</th>
+        <th>${!levelTo ? '' : ''}</th>
+        <th>Aantal Leads</th>
+        <th>Kosten</th>
+      </tr>`;
       t.appendChild(thead);
+
       const tbody = document.createElement('tbody');
       rows.forEach(r => {
         const tr = document.createElement('tr');
-        tr.innerHTML = `<td class="control">${r.label}</td><td>${r.leads}</td><td>${toMoney(r.cost)}</td>`;
+        tr.className = (levelToName === 'affiliate' ? 'level2-row' : levelToName === 'offer' ? 'level3-row' : '');
+        const arrow = r.children && r.children.length ? '<span class="arrow">▶</span>' : '<span class="arrow"></span>';
+
+        // we vullen kolommen zodat structuur gelijk blijft
+        let c1 = '', c2 = '', c3 = '';
+        if (levelFrom === 'day') { c1 = ''; c2 = r.label; }          // dag → affiliate
+        if (levelFrom === 'affiliate') { c1 = ''; c2 = ''; c3 = r.label; } // affiliate → offer
+        if (levelFrom === 'offer') { c1 = ''; c2 = ''; c3 = r.label; }
+
+        tr.innerHTML = `
+          <td>${levelFrom === 'day' ? '[dag]' : ''}</td>
+          <td class="control">${arrow}${(levelFrom==='day') ? r.label : (levelFrom==='affiliate' ? r.label : r.label)}</td>
+          <td>${(levelFrom==='affiliate') ? r.label : ''}</td>
+          <td>${r.leads}</td>
+          <td>${toMoney(r.cost)}</td>
+        `;
+        // data voor toggling
         tr.dataset.hasChildren = r.children && r.children.length ? '1' : '0';
         tr._children = r.children || [];
         tbody.appendChild(tr);
@@ -131,12 +193,28 @@
 
     async function loadTable() {
       const { order, tree } = await fetchTree();
-      const L1 = order[0], L2 = order[1], L3 = order[2];
+      const [L1, L2, L3] = order;
       const top = flattenTop(tree);
-
       renderTotals(top);
 
-      // (Re)init DataTable
+      const columns = [
+        { title: (L1 === 'day' ? 'Datum' : (L1 === 'affiliate' ? 'Affiliate ID' : 'Offer ID')),
+          data: 'day',
+          className: 'control',
+          render: (data, type, row) => {
+            const has = row.children && row.children.length;
+            const txt = row.day || '';
+            return has ? `<span class="arrow">▶</span>${txt}` : txt;
+          }
+        },
+        { title: (L2 === 'day' ? 'Datum' : (L2 === 'affiliate' ? 'Affiliate ID' : 'Offer ID')), data: 'affiliate',
+          render: (d)=> d || '' },
+        { title: (L3 === 'day' ? 'Datum' : (L3 === 'affiliate' ? 'Affiliate ID' : 'Offer ID')), data: 'offer',
+          render: (d)=> d || '' },
+        { title: 'Aantal Leads', data: 'leads' },
+        { title: 'Kosten', data: 'cost', render: d => toMoney(d) }
+      ];
+
       if ($.fn.dataTable.isDataTable('#leadsTable')) {
         const dt = $('#leadsTable').DataTable();
         dt.clear().rows.add(top).draw();
@@ -144,21 +222,16 @@
         $('#leadsTable').DataTable({
           data: top,
           order: [[0, 'asc']],
-          columns: [
-            { title: (L1 === 'day' ? 'Datum' : (L1 === 'affiliate' ? 'Affiliate ID' : 'Offer ID')),
-              data: 'label',
-              className: 'control',
-              render: (data, type, row) => row.children && row.children.length ? `▶ ${data}` : data
-            },
-            { title: 'Aantal Leads', data: 'leads' },
-            { title: 'Kosten', data: 'cost', render: d => toMoney(d) }
-          ]
+          columns
         });
       }
 
-      // Klik-handlers voor uitklappen (L2 en L3)
       const table = $('#leadsTable').DataTable();
 
+      // stylen per level
+      $('#leadsTable tbody tr').addClass('level1');
+
+      // klik: uitklappen naar L2
       $('#leadsTable tbody').off('click').on('click', 'td.control', function () {
         const tr = $(this).closest('tr');
         const row = table.row(tr);
@@ -169,61 +242,109 @@
         if (row.child.isShown()) {
           row.child.hide();
           tr.removeClass('shown');
-          $(this).html($(this).text().replace('▼','▶'));
+          $(this).find('.arrow').text('▶');
         } else {
-          const childTable = buildChildTable(rowData.children, (L2 === 'day' ? 'Datum' : (L2 === 'affiliate' ? 'Affiliate ID' : 'Offer ID')));
+          const kids = sortChildren(rowData.children.slice());
+          // maak child table met niveau info
+          const childTable = document.createElement('table');
+          childTable.className = 'details';
+          // header vast met 5 kolommen
+          childTable.innerHTML = `
+            <thead>
+              <tr>
+                <th>${(L1 === 'day') ? 'Datum' : (L1 === 'affiliate' ? 'Affiliate ID' : 'Offer ID')}</th>
+                <th>${(L2 === 'day') ? 'Datum' : (L2 === 'affiliate' ? 'Affiliate ID' : 'Offer ID')}</th>
+                <th>${(L3 === 'day') ? 'Datum' : (L3 === 'affiliate' ? 'Affiliate ID' : 'Offer ID')}</th>
+                <th>Aantal Leads</th>
+                <th>Kosten</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          `;
+          const tb = childTable.querySelector('tbody');
+
+          kids.forEach(k => {
+            const tr2 = document.createElement('tr');
+            tr2.className = 'level2-row';
+            const hasChildren = k.children && k.children.length;
+            const arrow = hasChildren ? '<span class="arrow">▶</span>' : '<span class="arrow"></span>';
+
+            // vul kolommen: L1 label staat al in hoofd-rij, hier tonen L2
+            const c1 = ''; // leeg om layout gelijk te houden
+            const c2 = `${arrow}${k.label}`;
+            const c3 = ''; // L3 pas in sub-sub
+
+            tr2.innerHTML = `
+              <td></td>
+              <td class="control">${c2}</td>
+              <td>${c3}</td>
+              <td>${k.leads}</td>
+              <td>${toMoney(k.cost)}</td>
+            `;
+            tr2.dataset.hasChildren = hasChildren ? '1' : '0';
+            tr2._children = sortChildren((k.children || []).slice());
+            tb.appendChild(tr2);
+          });
+
           row.child(childTable).show();
           tr.addClass('shown');
-          $(this).html($(this).text().replace('▶','▼'));
+          $(this).find('.arrow').text('▼');
 
-          // Tweede niveau klik (voor L3)
+          // tweede niveau klikken (naar L3)
           $(childTable).on('click', 'td.control', function () {
             const tr2 = $(this).closest('tr');
             const hasChildren = tr2.get(0).dataset.hasChildren === '1';
             const children = tr2.get(0)._children || [];
             if (!hasChildren) return;
 
-            // toggle subtable
             if (tr2.next().hasClass('sub-open')) {
               tr2.next().remove();
-              $(this).html($(this).text().replace('▼','▶'));
+              $(this).find('.arrow').text('▶');
             } else {
               const subRow = document.createElement('tr');
               subRow.className = 'sub-open';
               const td = document.createElement('td');
-              td.colSpan = 3;
-              const subTable = buildChildTable(children, (L3 === 'day' ? 'Datum' : (L3 === 'affiliate' ? 'Affiliate ID' : 'Offer ID')));
+              td.colSpan = 5;
+
+              // sub-sub table
+              const subTable = document.createElement('table');
+              subTable.className = 'details';
+              subTable.innerHTML = `
+                <thead>
+                  <tr>
+                    <th>${(L1 === 'day') ? 'Datum' : (L1 === 'affiliate' ? 'Affiliate ID' : 'Offer ID')}</th>
+                    <th>${(L2 === 'day') ? 'Datum' : (L2 === 'affiliate' ? 'Affiliate ID' : 'Offer ID')}</th>
+                    <th>${(L3 === 'day') ? 'Datum' : (L3 === 'affiliate' ? 'Affiliate ID' : 'Offer ID')}</th>
+                    <th>Aantal Leads</th>
+                    <th>Kosten</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              `;
+              const stb = subTable.querySelector('tbody');
+              children.forEach(c => {
+                const tr3 = document.createElement('tr');
+                tr3.className = 'level3-row';
+                tr3.innerHTML = `
+                  <td></td>
+                  <td></td>
+                  <td>${c.label}</td>
+                  <td>${c.leads}</td>
+                  <td>${toMoney(c.cost)}</td>
+                `;
+                stb.appendChild(tr3);
+              });
+
               td.appendChild(subTable);
+              const tdWrap = document.createElement('td');
               subRow.appendChild(td);
               tr2.after(subRow);
-              $(this).html($(this).text().replace('▶','▼'));
+              $(this).find('.arrow').text('▼');
             }
           });
         }
       });
-    }
 
-    // Events
-    document.getElementById('apply').addEventListener('click', loadTable);
-
-    // Init (optioneel: 30 dagen standaard)
-    (function setDefaultDates() {
-      const toISO = (d) => d.toISOString().slice(0,10);
-      const now = new Date();
-      const past = new Date(); past.setDate(now.getDate() - 30);
-      document.getElementById('fromDate').value = toISO(past);
-      document.getElementById('toDate').value = toISO(now);
-    })();
-
-    (async () => {
-      try {
-        await fetchFilters();
-        await loadTable();
-      } catch (e) {
-        console.error(e);
-        alert('Kon dashboard data niet laden.');
-      }
-    })();
-  </script>
-</body>
-</html>
+      // verander sorteerkeuze -> herladen
+      document.getElementById('sortBy').onchange =
+      document.getElementById('sortDir
