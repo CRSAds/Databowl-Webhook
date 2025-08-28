@@ -7,22 +7,30 @@ const DIRECTUS_TOKEN = process.env.DIRECTUS_TOKEN || '';
 const SHARED_SECRET = process.env.DATABOWL_WEBHOOK_SECRET || '';
 
 // === Utils ===
-const normMoney = (v) => (v == null || v === '' ? null : Number.parseFloat(v).toFixed(2));
+const formatEuro = (v) => {
+  if (v == null || v === '' || isNaN(v)) return null;
+  return new Intl.NumberFormat('nl-NL', {
+    style: 'currency',
+    currency: 'EUR',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(Number(v));
+};
 const asISOFromUnix = (s) => {
   const n = Number(s);
   return Number.isFinite(n) ? new Date(n * 1000).toISOString() : new Date().toISOString();
 };
 
-// Pas aan zodra je nummers definitief zijn in Databowl
+// Veld mapping (aangepast op jouw payload)
 const FIELD_IDS = {
   offer_id: '1687',
   affiliate_id: '1684',
   supplier_id_via_data: '1685',
-  sub_id: null,
   t_id: '1322', // f_1322_transaction_id → Directus t_id
+  sub_id: null,
 };
 
-// statusId → label
+// statusId → leesbare label
 const STATUS_MAP = {
   '1': 'Received',
   '2': 'Rejected',
@@ -49,7 +57,7 @@ function makeKey(obj) {
   return h.digest('hex');
 }
 
-// Mapping Databowl payload → Directus item
+// Payload mapping
 function mapPayload(body) {
   const b = body || {};
 
@@ -71,8 +79,8 @@ function mapPayload(body) {
     const status = statusId ? (STATUS_MAP[statusId] || `Unknown (${statusId})`) : 'unknown';
 
     const created_at = p.receivedAt ? asISOFromUnix(p.receivedAt) : new Date().toISOString();
-    const revenue = normMoney(p.normalRevenue ?? p.revenue);
-    const cost = normMoney(p.normalCost ?? p.cost);
+    const revenue = formatEuro(p.normalRevenue ?? p.revenue);
+    const cost = formatEuro(p.normalCost ?? p.cost);
     const currency = 'EUR';
 
     const email = data?.['1'] || null;
@@ -82,7 +90,7 @@ function mapPayload(body) {
 
     return {
       lead_id,
-      status, // leesbaar label
+      status,
       revenue,
       cost,
       currency,
@@ -93,7 +101,7 @@ function mapPayload(body) {
       sub_id,
       t_id,
       created_at,
-      raw: { original: b, email_hash, status_id: statusId }, // numerieke code blijft beschikbaar
+      raw: { original: b, email_hash, status_id: statusId },
     };
   }
 
@@ -104,7 +112,6 @@ function mapPayload(body) {
   const meta = b.meta || b.metadata || {};
 
   const statusRaw = msg.status ?? b.status ?? ld.status ?? null;
-  // Als numeriek (string/number) → map, anders gebruik raw tekst
   const status =
     statusRaw != null && String(Number(statusRaw)) === String(statusRaw)
       ? STATUS_MAP[String(statusRaw)] || `Unknown (${String(statusRaw)})`
@@ -112,8 +119,8 @@ function mapPayload(body) {
 
   const created_at = msg.created_at ?? ld.created_at ?? b.created_at ?? new Date().toISOString();
 
-  const revenue = normMoney(fin.revenue ?? b.revenue ?? ld.revenue);
-  const cost = normMoney(fin.cost ?? b.cost ?? ld.cost);
+  const revenue = formatEuro(fin.revenue ?? b.revenue ?? ld.revenue);
+  const cost = formatEuro(fin.cost ?? b.cost ?? ld.cost);
   const currency = (fin.currency ?? b.currency ?? 'EUR') || 'EUR';
 
   const offer_id = ld.offer_id ?? b.offer_id ?? meta.offer_id ?? null;
@@ -121,8 +128,12 @@ function mapPayload(body) {
   const supplier_id = ld.supplier_id ?? b.supplier_id ?? meta.supplier_id ?? null;
   const affiliate_id = ld.affiliate_id ?? b.affiliate_id ?? meta.affiliate_id ?? null;
   const sub_id = ld.sub_id ?? ld.subid ?? b.sub_id ?? meta.sub_id ?? null;
-  const t_id = (FIELD_IDS.t_id && (ld[FIELD_IDS.t_id] || (b.data && b.data[FIELD_IDS.t_id])))
-    ?? ld.t_id ?? b.t_id ?? meta.t_id ?? null;
+  const t_id =
+    (FIELD_IDS.t_id && (ld[FIELD_IDS.t_id] || (b.data && b.data[FIELD_IDS.t_id]))) ??
+    ld.t_id ??
+    b.t_id ??
+    meta.t_id ??
+    null;
 
   const lead_id = ld.id ?? b.lead_id ?? msg.lead_id ?? null;
 
@@ -148,7 +159,7 @@ function mapPayload(body) {
   };
 }
 
-// Directus create (met unique event_key afhandeling)
+// Directus create (met unique event_key)
 async function createEvent(event) {
   const r = await fetch(`${DIRECTUS_URL}/items/Databowl_lead_events`, {
     method: 'POST',
@@ -167,14 +178,12 @@ async function createEvent(event) {
     const j = JSON.parse(txt);
     const nonUnique = j?.errors?.some((e) => e?.extensions?.code === 'RECORD_NOT_UNIQUE');
     if (nonUnique) return { skipped: true };
-  } catch {
-    // ignore
-  }
+  } catch {}
   throw new Error(`Directus create ${r.status}: ${txt}`);
 }
 
 export default async function handler(req, res) {
-  // CORS voor browser-testen
+  // CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
@@ -195,7 +204,11 @@ export default async function handler(req, res) {
             let d = '';
             req.on('data', (c) => (d += c));
             req.on('end', () => {
-              try { resolve(JSON.parse(d || '{}')); } catch { resolve({}); }
+              try {
+                resolve(JSON.parse(d || '{}'));
+              } catch {
+                resolve({});
+              }
             });
           });
 
@@ -204,9 +217,8 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: 'Missing lead_id in payload' });
     }
 
-    // Idempotency via unieke kolom event_key (zonder read)
     const event_key = makeKey(event);
-    event.event_key = event_key; // <-- vereist veld in Directus, Unique
+    event.event_key = event_key;
     event.raw = { ...(event.raw || {}), key: event_key };
 
     const result = await createEvent(event);
