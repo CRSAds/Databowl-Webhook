@@ -11,9 +11,11 @@
     .filters { margin-bottom: 20px; display:flex; gap:16px; flex-wrap:wrap; align-items: end; }
     .filters label { display:flex; flex-direction:column; font-size: 12px; gap:6px; }
     .filters select, .filters input[type="date"] { padding: 6px 8px; min-width: 160px; }
-    button#apply { height: 36px; padding: 0 14px; cursor: pointer; }
+    button#apply, button.group-open { height: 36px; padding: 0 14px; cursor: pointer; }
     table { width: 100%; }
     .totals { margin-top: 10px; font-weight: 600; }
+    .details { background: rgba(0,0,0,0.03); }
+    .control { cursor: pointer; font-weight: 600; }
   </style>
 </head>
 <body>
@@ -38,6 +40,13 @@
     <label>Tot
       <input type="date" id="toDate" />
     </label>
+    <label>Groepering
+      <select id="groupOrder">
+        <option value="day,affiliate,offer" selected>Dag → Affiliate → Offer</option>
+        <option value="affiliate,day,offer">Affiliate → Dag → Offer</option>
+        <option value="offer,affiliate,day">Offer → Affiliate → Dag</option>
+      </select>
+    </label>
     <button id="apply">Toepassen</button>
   </div>
 
@@ -47,92 +56,157 @@
   <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
   <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
   <script>
-    // Zelfde origin als deze pagina (https://databowl-webhook.vercel.app)
-    const BASE = '';
+    const BASE = ''; // zelfde origin
 
-    // Helpers
-    const toNL = (yyyy_mm_dd) => {
-      // yyyy-mm-dd → nl-NL datum
-      const [y,m,d] = String(yyyy_mm_dd).split('-').map(Number);
-      if (!y || !m || !d) return yyyy_mm_dd;
-      return new Date(Date.UTC(y, m-1, d)).toLocaleDateString('nl-NL');
-    };
+    // ---------- helpers ----------
+    const toMoney = (n) => Number(n || 0).toFixed(2);
 
     async function fetchFilters() {
       const r = await fetch(`${BASE}/api/dashboard-filters`);
-      if (!r.ok) throw new Error('Kon filters niet laden');
       const { data } = await r.json();
-      const { offer_ids, campaign_ids, affiliate_ids, sub_ids } = data;
-
       const fill = (id, values) => {
         const sel = document.getElementById(id);
-        values.forEach(v => {
-          const opt = document.createElement('option');
-          opt.value = v; opt.textContent = v;
-          sel.appendChild(opt);
-        });
+        values.forEach(v => { const o = document.createElement('option'); o.value=v; o.textContent=v; sel.appendChild(o); });
       };
-      fill('offerFilter', offer_ids);
-      fill('campaignFilter', campaign_ids);
-      fill('affiliateFilter', affiliate_ids);
-      fill('subFilter', sub_ids);
+      fill('offerFilter', data.offer_ids);
+      fill('campaignFilter', data.campaign_ids);
+      fill('affiliateFilter', data.affiliate_ids);
+      fill('subFilter', data.sub_ids);
     }
 
-    async function fetchAggregate() {
+    async function fetchTree() {
       const params = new URLSearchParams();
       const v = (id) => document.getElementById(id).value;
-
       if (v('offerFilter'))     params.append('offer_id', v('offerFilter'));
       if (v('campaignFilter'))  params.append('campaign_id', v('campaignFilter'));
       if (v('affiliateFilter')) params.append('affiliate_id', v('affiliateFilter'));
       if (v('subFilter'))       params.append('sub_id', v('subFilter'));
       if (v('fromDate'))        params.append('date_from', v('fromDate'));
       if (v('toDate'))          params.append('date_to', v('toDate'));
+      params.append('order', v('groupOrder') || 'day,affiliate,offer');
 
-      const r = await fetch(`${BASE}/api/dashboard-aggregate?` + params.toString());
-      if (!r.ok) throw new Error('Kon aggregatie niet laden');
-      const { data } = await r.json(); // [{ date: "YYYY-MM-DD", leads: <int>, cost: <number> }]
-      return data || [];
+      const r = await fetch(`${BASE}/api/dashboard-tree?` + params.toString());
+      if (!r.ok) throw new Error('Kon tree niet laden');
+      const { data } = await r.json();
+      return data; // { order: [...], tree: [...] }
     }
 
-    function renderTotals(rows) {
-      const totalLeads = rows.reduce((s, r) => s + Number(r.leads || 0), 0);
-      const totalCost  = rows.reduce((s, r) => s + Number(r.cost  || 0), 0);
+    function renderTotals(flat) {
+      const totalLeads = flat.reduce((s, r) => s + Number(r.leads || 0), 0);
+      const totalCost  = flat.reduce((s, r) => s + Number(r.cost  || 0), 0);
       document.getElementById('totals').textContent =
-        `Totaal: ${totalLeads.toLocaleString('nl-NL')} leads • Kosten € ${totalCost.toFixed(2)}`;
+        `Totaal: ${totalLeads.toLocaleString('nl-NL')} leads • Kosten € ${toMoney(totalCost)}`;
+    }
+
+    // Flatten top-level for DataTable; we voegen zelf child-tables toe bij klik.
+    function flattenTop(tree) {
+      return tree.map(n => ({
+        key: n.key,
+        label: n.label,
+        leads: n.leads,
+        cost: n.cost,
+        children: n.children || []
+      }));
+    }
+
+    function buildChildTable(rows, levelName) {
+      // eenvoudige HTML-tabel voor child-rijen
+      const t = document.createElement('table');
+      t.className = 'display details';
+      t.style.width = '100%';
+      const thead = document.createElement('thead');
+      thead.innerHTML = `<tr><th>${levelName}</th><th>Aantal Leads</th><th>Kosten</th></tr>`;
+      t.appendChild(thead);
+      const tbody = document.createElement('tbody');
+      rows.forEach(r => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td class="control">${r.label}</td><td>${r.leads}</td><td>${toMoney(r.cost)}</td>`;
+        tr.dataset.hasChildren = r.children && r.children.length ? '1' : '0';
+        tr._children = r.children || [];
+        tbody.appendChild(tr);
+      });
+      t.appendChild(tbody);
+      return t;
     }
 
     async function loadTable() {
-      const rows = await fetchAggregate();
+      const { order, tree } = await fetchTree();
+      const L1 = order[0], L2 = order[1], L3 = order[2];
+      const top = flattenTop(tree);
 
-      const tableData = rows.map(r => ({
-        date: toNL(r.date),               // r.date is al per dag (YYYY-MM-DD)
-        leads: Number(r.leads || 0),
-        cost:  Number(r.cost  || 0).toFixed(2)
-      }));
+      renderTotals(top);
 
-      renderTotals(rows);
-
+      // (Re)init DataTable
       if ($.fn.dataTable.isDataTable('#leadsTable')) {
-        const t = $('#leadsTable').DataTable();
-        t.clear().rows.add(tableData).draw();
+        const dt = $('#leadsTable').DataTable();
+        dt.clear().rows.add(top).draw();
       } else {
         $('#leadsTable').DataTable({
-          data: tableData,
-          order: [[0, 'desc']],
+          data: top,
+          order: [[0, 'asc']],
           columns: [
-            { title: 'Datum', data: 'date' },
+            { title: (L1 === 'day' ? 'Datum' : (L1 === 'affiliate' ? 'Affiliate ID' : 'Offer ID')),
+              data: 'label',
+              className: 'control',
+              render: (data, type, row) => row.children && row.children.length ? `▶ ${data}` : data
+            },
             { title: 'Aantal Leads', data: 'leads' },
-            { title: 'Kosten', data: 'cost' }
+            { title: 'Kosten', data: 'cost', render: d => toMoney(d) }
           ]
         });
       }
+
+      // Klik-handlers voor uitklappen (L2 en L3)
+      const table = $('#leadsTable').DataTable();
+
+      $('#leadsTable tbody').off('click').on('click', 'td.control', function () {
+        const tr = $(this).closest('tr');
+        const row = table.row(tr);
+        const rowData = row.data();
+
+        if (!rowData.children || !rowData.children.length) return;
+
+        if (row.child.isShown()) {
+          row.child.hide();
+          tr.removeClass('shown');
+          $(this).html($(this).text().replace('▼','▶'));
+        } else {
+          const childTable = buildChildTable(rowData.children, (L2 === 'day' ? 'Datum' : (L2 === 'affiliate' ? 'Affiliate ID' : 'Offer ID')));
+          row.child(childTable).show();
+          tr.addClass('shown');
+          $(this).html($(this).text().replace('▶','▼'));
+
+          // Tweede niveau klik (voor L3)
+          $(childTable).on('click', 'td.control', function () {
+            const tr2 = $(this).closest('tr');
+            const hasChildren = tr2.get(0).dataset.hasChildren === '1';
+            const children = tr2.get(0)._children || [];
+            if (!hasChildren) return;
+
+            // toggle subtable
+            if (tr2.next().hasClass('sub-open')) {
+              tr2.next().remove();
+              $(this).html($(this).text().replace('▼','▶'));
+            } else {
+              const subRow = document.createElement('tr');
+              subRow.className = 'sub-open';
+              const td = document.createElement('td');
+              td.colSpan = 3;
+              const subTable = buildChildTable(children, (L3 === 'day' ? 'Datum' : (L3 === 'affiliate' ? 'Affiliate ID' : 'Offer ID')));
+              td.appendChild(subTable);
+              subRow.appendChild(td);
+              tr2.after(subRow);
+              $(this).html($(this).text().replace('▶','▼'));
+            }
+          });
+        }
+      });
     }
 
     // Events
     document.getElementById('apply').addEventListener('click', loadTable);
 
-    // Init (optioneel: standaard zet "Vanaf" op 30 dagen terug)
+    // Init (optioneel: 30 dagen standaard)
     (function setDefaultDates() {
       const toISO = (d) => d.toISOString().slice(0,10);
       const now = new Date();
