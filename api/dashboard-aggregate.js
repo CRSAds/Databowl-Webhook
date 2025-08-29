@@ -6,6 +6,10 @@
 const DIRECTUS_URL = (process.env.DIRECTUS_URL || '').replace(/\/+$/, '');
 const DIRECTUS_TOKEN = process.env.DIRECTUS_TOKEN || '';
 
+/** Tunables */
+const PAGE_SIZE = Number(process.env.DASHBOARD_PAGE_SIZE || 1000); // rijen per page uit Directus
+const MAX_DAYS   = Number(process.env.DASHBOARD_MAX_DAYS  || 31);  // hard guard op datum-range
+
 function setCors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -35,12 +39,8 @@ function toNumber(v) {
   if (v == null) return 0;
   if (typeof v === 'number') return Number.isFinite(v) ? v : 0;
   let s = String(v).trim();
-  // verwijder currency/whitespace
   s = s.replace(/[€\s]/g, '');
-  // als geen punt maar wel komma → gebruik komma als decimaal
   if (s.indexOf('.') === -1 && s.indexOf(',') > -1) s = s.replace(',', '.');
-  // verwijder overgebleven thousand-seps
-  s = s.replace(/(,|\.) (?=\d{3}\b)/g, '');
   const n = Number(s);
   return Number.isFinite(n) ? n : 0;
 }
@@ -62,6 +62,49 @@ function getGroupLabel(key, level) {
   return key;
 }
 
+/** Helper: alle pagina's ophalen en samenvoegen */
+async function fetchAllRows(params) {
+  const headers = { Authorization: `Bearer ${DIRECTUS_TOKEN}` };
+  let offset = 0;
+  let all = [];
+
+  while (true) {
+    const p = new URLSearchParams(params);
+    p.set('limit', String(PAGE_SIZE));
+    p.set('offset', String(offset));
+
+    const url = `${DIRECTUS_URL}/items/Databowl_lead_events?${p.toString()}`;
+    const r = await fetch(url, { headers });
+    const j = await r.json();
+    if (!r.ok) throw new Error(`Directus ${r.status}: ${JSON.stringify(j)}`);
+
+    const rows = Array.isArray(j.data) ? j.data : [];
+    all = all.concat(rows);
+
+    if (rows.length < PAGE_SIZE) break; // laatste pagina
+    offset += PAGE_SIZE;
+  }
+  return all;
+}
+
+/** Guard: range limiter (voorkomt gigantische pulls per ongeluk) */
+function guardDateRange(q) {
+  // default laatste 7 dagen als niets opgegeven
+  let from = q.date_from ? new Date(q.date_from) : new Date(Date.now() - 6 * 864e5);
+  let to   = q.date_to   ? new Date(q.date_to)   : new Date();
+
+  // normaliseer naar YYYY-MM-DD
+  const toISO = (d) => d.toISOString().slice(0, 10);
+  // max window
+  const ms = to - from;
+  const days = Math.ceil(ms / 86400000) + 1;
+  if (days > MAX_DAYS) {
+    // cap naar laatste MAX_DAYS
+    from = new Date(to.getTime() - (MAX_DAYS - 1) * 86400000);
+  }
+  return { date_from: toISO(from), date_to: toISO(to) };
+}
+
 export default async function handler(req, res) {
   setCors(res);
   if (req.method === 'OPTIONS') return res.status(200).end();
@@ -70,27 +113,23 @@ export default async function handler(req, res) {
   try {
     const {
       offer_id, campaign_id, affiliate_id, sub_id,
-      date_from, date_to,
       order = 'day,affiliate,offer',
     } = req.query;
 
-    // Ruwe records ophalen; alleen velden die we nodig hebben
-    const p = new URLSearchParams();
-    p.append('limit', '-1');
-    p.append('fields', ['created_at', 't_id', 'affiliate_id', 'offer_id', 'cost'].join(','));
+    // Range guard + inclusief eind
+    const { date_from, date_to } = guardDateRange(req.query);
 
-    if (date_from) p.append('filter[created_at][_gte]', date_from);
-    if (date_to)   p.append('filter[created_at][_lt]', nextDayStr(date_to)); // <-- inclusief
-    if (offer_id)     p.append('filter[offer_id][_eq]', offer_id);
-    if (campaign_id)  p.append('filter[campaign_id][_eq]', campaign_id);
-    if (affiliate_id) p.append('filter[affiliate_id][_eq]', affiliate_id);
-    if (sub_id)       p.append('filter[sub_id][_eq]', sub_id);
+    // Ruwe records: alleen noodzakelijke velden
+    const params = new URLSearchParams();
+    params.append('fields', ['created_at', 't_id', 'affiliate_id', 'offer_id', 'cost'].join(','));
+    params.append('filter[created_at][_gte]', date_from);
+    params.append('filter[created_at][_lt]', nextDayStr(date_to));
+    if (offer_id)     params.append('filter[offer_id][_eq]', offer_id);
+    if (campaign_id)  params.append('filter[campaign_id][_eq]', campaign_id);
+    if (affiliate_id) params.append('filter[affiliate_id][_eq]', affiliate_id);
+    if (sub_id)       params.append('filter[sub_id][_eq]', sub_id);
 
-    const url = `${DIRECTUS_URL}/items/Databowl_lead_events?${p.toString()}`;
-    const r = await fetch(url, { headers: { Authorization: `Bearer ${DIRECTUS_TOKEN}` } });
-    const j = await r.json();
-    if (!r.ok) throw new Error(JSON.stringify(j));
-    const rows = Array.isArray(j.data) ? j.data : [];
+    const rows = await fetchAllRows(params);
 
     // Volgorde van niveaus bepalen
     const levels = order.split(',').map(s => s.trim()).map(s => {
@@ -132,26 +171,31 @@ export default async function handler(req, res) {
       L1map.set(k1, n1);
     }
 
-    // Netjes naar arrays + sortering
+    // Netjes naar arrays + basis sortering
     const sortFn = (a, b) => {
       if (L1 === 'day') return a.key < b.key ? 1 : -1; // dagen desc
       return ('' + a.key).localeCompare('' + b.key, 'nl', { numeric: true });
     };
 
-    const toArray = (map, level) => {
-      return Array.from(map.values()).map(n => {
+    const toArray = (map) =>
+      Array.from(map.values()).map(n => {
         const out = {
           key: n.key,
           label: n.label,
           leads: n.leadsSet ? n.leadsSet.size : 0,
           cost: n.cost,
         };
-        if (n.children && n.children.size) out.children = toArray(n.children, level);
+        if (n.children && n.children.size) out.children = toArray(n.children);
         return out;
       }).sort(sortFn);
-    };
 
-    const tree = toArray(L1map, L1);
+    const tree = toArray(L1map);
+
+    // handige response headers voor debug/monitoring
+    res.setHeader('X-Queried-From', date_from);
+    res.setHeader('X-Queried-To', date_to);
+    res.setHeader('X-Rows-Scanned', String(rows.length));
+    res.setHeader('X-Page-Size', String(PAGE_SIZE));
 
     return res.status(200).json({ data: { order: levels, tree } });
   } catch (e) {
