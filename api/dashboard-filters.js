@@ -1,6 +1,7 @@
 // /api/dashboard-filters.js
 const DIRECTUS_URL = (process.env.DIRECTUS_URL || '').replace(/\/+$/, '');
 const DIRECTUS_TOKEN = process.env.DIRECTUS_TOKEN || '';
+const EXCLUDED_CAMPAIGN = '925';
 
 function setCors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -14,10 +15,11 @@ export default async function handler(req, res) {
   if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
 
   try {
-    // haal alleen de kolommen op die we nodig hebben
     const params = new URLSearchParams();
     params.append('limit', '-1');
     params.append('fields', 'offer_id,campaign_id,affiliate_id,sub_id');
+    // campagne 925 uit de keuzes houden
+    params.append('filter[campaign_id][_neq]', EXCLUDED_CAMPAIGN);
 
     const r = await fetch(`${DIRECTUS_URL}/items/Databowl_lead_events?${params}`, {
       headers: { Authorization: `Bearer ${DIRECTUS_TOKEN}` }
