@@ -1,5 +1,5 @@
 // /api/dashboard-aggregate.js
-// Hybride aggregatie (range ≤ 3 dagen, campagne 925 uitgesloten).
+// Hybride aggregatie (range ≤ 3 dagen, campagne 925 uitgesloten in READ):
 // - L1 (per dag): DISTINCT t_id + SUM(cost) via REST.
 // - Drilldown (dag → affiliate → offer [+ campaign_id-info]): via GraphQL aggregate.
 
@@ -7,7 +7,7 @@ const DIRECTUS_URL = (process.env.DIRECTUS_URL || '').replace(/\/+$/, '');
 const DIRECTUS_TOKEN = process.env.DIRECTUS_TOKEN || '';
 
 const MAX_DAYS = 3;                 // hard cap
-const EXCLUDED_CAMPAIGN = '925';    // global exclude
+const EXCLUDED_CAMPAIGN = '925';    // global exclude (READ ONLY)
 
 function setCors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -99,7 +99,7 @@ async function fetchDistinctPerDay({ offer_id, campaign_id, affiliate_id, sub_id
     if (affiliate_id) p.append('filter[affiliate_id][_eq]', affiliate_id);
     if (sub_id)       p.append('filter[sub_id][_eq]', sub_id);
 
-    // globale uitsluiting
+    // globale uitsluiting (READ)
     p.append('filter[campaign_id][_neq]', EXCLUDED_CAMPAIGN);
 
     const url = `${DIRECTUS_URL}/items/Databowl_lead_events?${p.toString()}`;
@@ -128,7 +128,6 @@ async function fetchDistinctPerDay({ offer_id, campaign_id, affiliate_id, sub_id
     offset += pageSize;
   }
 
-  // plain objecten
   const out = new Map(); // day -> { leads:number, cost:number }
   for (const [day, { set, cost }] of dayMap.entries()) {
     out.set(day, { leads: set.size, cost });
@@ -164,7 +163,7 @@ async function fetchGraphGroups({ offer_id, campaign_id, affiliate_id, sub_id, d
   if (affiliate_id) filter.affiliate_id = { _eq: affiliate_id };
   if (sub_id)       filter.sub_id       = { _eq: sub_id };
 
-  // globale uitsluiting
+  // globale uitsluiting (READ)
   filter.campaign_id = filter.campaign_id
     ? { ...filter.campaign_id, _neq: EXCLUDED_CAMPAIGN }
     : { _neq: EXCLUDED_CAMPAIGN };
@@ -197,7 +196,7 @@ async function fetchGraphGroups({ offer_id, campaign_id, affiliate_id, sub_id, d
     offset += pageSize;
   }
 
-  return groups; // [{group:{created_at,affiliate_id,offer_id,campaign_id}, countDistinct:{t_id}, sum:{cost}}]
+  return groups;
 }
 
 /* ---------------- handler ---------------- */
@@ -215,19 +214,18 @@ export default async function handler(req, res) {
       order = 'day,affiliate,offer',
     } = req.query;
 
-    // range uit query clampen naar MAX_DAYS
     const cr = clampRange(req.query.date_from, req.query.date_to);
     if (cr.error) return res.status(400).json({ error: cr.error });
     const { date_from, date_to } = cr;
 
-    // 1) Unieke leads + kosten per dag (correct, zonder dubbeltelling)
+    // 1) unieke leads + kosten per dag
     const perDayDistinct = await fetchDistinctPerDay({ offer_id, campaign_id, affiliate_id, sub_id, date_from, date_to });
 
-    // 2) Drilldowngroepen uit GraphQL
+    // 2) drilldown aggregaties
     const groups = await fetchGraphGroups({ offer_id, campaign_id, affiliate_id, sub_id, date_from, date_to });
 
-    // 3) Bouw tree: dag -> affiliate -> offer (bewaar campaign_id als veld)
-    const dayMap = new Map(); // dayKey -> { key,label, leads:number, cost:number, children: Map }
+    // 3) boom opbouwen
+    const dayMap = new Map();
 
     for (const g of groups) {
       const grp = g.group || {};
@@ -242,14 +240,12 @@ export default async function handler(req, res) {
         dayMap.set(dayKey, dayNode);
       }
 
-      // L2 (affiliate)
       let l2 = dayNode.children.get(affKey);
       if (!l2) {
         l2 = { key: affKey, label: labelFor('affiliate', affKey), leads: 0, cost: 0, children: new Map() };
         dayNode.children.set(affKey, l2);
       }
 
-      // L3 (offer)
       let l3 = l2.children.get(offKey);
       if (!l3) {
         l3 = { key: offKey, label: labelFor('offer', offKey), leads: 0, cost: 0, campaign_id: campId };
@@ -259,7 +255,6 @@ export default async function handler(req, res) {
       const cnt = Number(g?.countDistinct?.t_id || 0);
       const sum = toNumber(g?.sum?.cost || 0);
 
-      // kinderen krijgen hun eigen counts
       l3.leads += cnt;
       l3.cost  += sum;
       l2.leads += cnt;
