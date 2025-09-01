@@ -18,7 +18,8 @@ export default async function handler(req, res) {
     const params = new URLSearchParams();
     params.append('limit', '-1');
     params.append('fields', 'offer_id,campaign_id,affiliate_id,sub_id');
-    // campagne 925 uit de keuzes houden
+
+    // campagne 925 uit de keuzes houden (READ)
     params.append('filter[campaign_id][_neq]', EXCLUDED_CAMPAIGN);
 
     const r = await fetch(`${DIRECTUS_URL}/items/Databowl_lead_events?${params}`, {
