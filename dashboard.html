@@ -87,36 +87,49 @@
   <script>
     const BASE = ''; // zelfde origin
 
-    /* ======= STATE (één keer laden, daarna client-side) ======= */
-    let cachedOrder = ['day','affiliate','offer']; // levels
-    let cachedTree = [];                           // boom met {key,label,leads,cost,children}
-    let l1Map = new Map();                         // key -> node (top)
-    let l2MapPerL1 = new Map();                    // l1key -> Map(l2key -> node)
+    /* ======= STATE ======= */
+    let cachedOrder = ['day','affiliate','offer'];
+    let cachedTree = [];
+    let l1Map = new Map();
+    let l2MapPerL1 = new Map();
 
-    const openL1 = new Set();                      // open/dicht top niveau
-    const openL2 = new Map();                      // l1key -> Set(l2key) open
+    const openL1 = new Set();
+    const openL2 = new Map();
 
     const toMoney = (n) => Number(n || 0).toFixed(2);
     const showLoader = (on) => document.getElementById('loader').classList.toggle('show', !!on);
     const setStatus = (txt) => document.getElementById('statusbar').textContent = txt || '';
+    const applyBtn = document.getElementById('apply');
 
     /* ======= DATA ======= */
     async function fetchFilters() {
       const r = await fetch(`${BASE}/api/dashboard-filters`);
+      if (!r.ok) throw new Error('Kon filters niet laden');
       const { data } = await r.json();
       const fill = (id, values) => {
         const sel = document.getElementById(id);
         values.forEach(v => { const o = document.createElement('option'); o.value=v; o.textContent=v; sel.appendChild(o); });
       };
       fill('offerFilter', data.offer_ids);
-      fill('campaignFilter', data.campaign_ids);
+      fill('campaignFilter', data.campaign_ids); // 925 zit hier niet in (API exclude)
       fill('affiliateFilter', data.affiliate_ids);
       fill('subFilter', data.sub_ids);
     }
 
+    function daysBetween(a,b){ return Math.ceil((b - a)/86400000) + 1; }
+
     async function fetchTree() {
       const params = new URLSearchParams();
       const v = (id) => document.getElementById(id).value;
+
+      // client-side guard: max 3 dagen
+      const from = v('fromDate'), to = v('toDate');
+      if (from && to) {
+        const df = new Date(from), dt = new Date(to);
+        const d = daysBetween(df, dt);
+        if (d > 3) throw new Error(`Selecteer max 3 dagen (nu ${d}).`);
+      }
+
       if (v('offerFilter'))     params.append('offer_id', v('offerFilter'));
       if (v('campaignFilter'))  params.append('campaign_id', v('campaignFilter'));
       if (v('affiliateFilter')) params.append('affiliate_id', v('affiliateFilter'));
@@ -126,7 +139,12 @@
       params.append('order', v('groupOrder') || 'day,affiliate,offer');
 
       const r = await fetch(`${BASE}/api/dashboard-aggregate?` + params.toString());
-      if (!r.ok) throw new Error('Kon data niet laden');
+      if (!r.ok) {
+        const msg = await r.text().catch(()=>null);
+        let human = 'Kon data niet laden';
+        try { const j = JSON.parse(msg); if (j?.error) human = j.error; } catch {}
+        throw new Error(human);
+      }
       const { data } = await r.json();
       return data; // { order:[...], tree:[...] }
     }
@@ -153,7 +171,7 @@
         `Totaal: ${totalLeads.toLocaleString('nl-NL')} leads • Kosten € ${toMoney(totalCost)}`;
     }
 
-    /* ======= SORTERING (volgt altijd header) ======= */
+    /* ======= SORTERING ======= */
     function getHeaderOrder(table) { // [colIdx, dir]
       const order = table ? table.order() : [];
       return Array.isArray(order) && order.length ? order[0] : [0,'asc'];
@@ -165,7 +183,7 @@
       if (col === 3) return nodes.sort((a,b)=> (Number(a.leads||0)-Number(b.leads||0))*mult);
       if (col === 4) return nodes.sort((a,b)=> (Number(a.cost ||0)-Number(b.cost ||0))*mult);
 
-      // op label (Dag/Affiliate/Offer)
+      // op label
       return nodes.sort((a,b)=>{
         const av=(a.label??'')+'', bv=(b.label??'')+'';
         const an=Number(av), bn=Number(bv);
@@ -174,7 +192,7 @@
       });
     }
 
-    /* ======= RENDER TOP ======= */
+    /* ======= RENDER ======= */
     function toTopRows(tree) {
       return tree.map(n=>({
         key: n.key ?? n.label,
@@ -198,7 +216,6 @@
       return td;
     }
 
-    /* ======= CHILD RENDERERS (zonder refetch) ======= */
     function expandLevel1(tr, node, table) {
       const k1 = node.key ?? node.label;
       const children = sortNodesByHeader((node.children || []).map(x=>({...x})), table);
@@ -208,16 +225,11 @@
 
         const rowEl = document.createElement('tr');
         rowEl.className = 'level2';
-        // kolom 1: leeg (L1 staat in parent)
         rowEl.appendChild(makeTd(''));
-        // kolom 2: affiliate (met pijltje indien kinderen)
         const arrow = (c.children && c.children.length) ? '<span class="arrow">▶</span>' : '<span class="arrow"></span>';
         rowEl.appendChild(makeTdHTML(`${arrow}${c.label}`, 'control'));
-        // kolom 3: leeg (offer komt in level3)
         rowEl.appendChild(makeTd(''));
-        // kolom 4: leads
         rowEl.appendChild(makeTd(String(c.leads)));
-        // kolom 5: cost
         rowEl.appendChild(makeTd(toMoney(c.cost)));
 
         rowEl.dataset.l1 = k1;
@@ -226,14 +238,12 @@
 
         $(rowEl).insertAfter(tr);
 
-        // Direct openen als het in openL2 staat
         if (openL2.get(k1)?.has(k2)) {
-          expandLevel2($(rowEl), c, table); // jQuery tr wrapper
+          expandLevel2($(rowEl), c, table);
           rowEl.classList.add('shown');
           rowEl.querySelector('.arrow').textContent = '▼';
         }
 
-        // click handler L2
         $(rowEl).off('click').on('click', 'td.control', function (e) {
           e.stopPropagation();
           const thisTr = $(this).closest('tr');
@@ -292,9 +302,9 @@
       }
     }
 
-    /* ======= HOOFDFLOW ======= */
+    /* ======= FLOW ======= */
     async function loadDataAndRender() {
-      showLoader(true); setStatus('Data ophalen…');
+      showLoader(true); setStatus('Data ophalen…'); applyBtn.disabled = true;
       try {
         const { order, tree } = await fetchTree();
         cachedOrder = order;
@@ -327,7 +337,6 @@
         let dt;
         if ($.fn.dataTable.isDataTable('#leadsTable')) {
           dt = $('#leadsTable').DataTable();
-          // reset open states bij nieuwe fetch
           openL1.clear(); openL2.clear();
           dt.clear().rows.add(topRows).draw(false);
         } else {
@@ -338,12 +347,11 @@
           });
         }
 
-        // style + click
         $('#leadsTable tbody tr').addClass('level1');
         $('#leadsTable tbody').off('click').on('click','td.control',function(){
           const tr = $(this).closest('tr');
           const row = dt.row(tr);
-          const data = row.data();         // top row object
+          const data = row.data();
           const node = l1Map.get(data.key) || {children:[]};
 
           if (!node.children || !node.children.length) return;
@@ -354,7 +362,6 @@
             $(this).find('.arrow').text('▶');
             openL1.delete(data.key);
           } else {
-            // eerst eventuele rest onder deze rij weghalen
             collapseLevel1(tr);
             expandLevel1(tr, node, dt);
             tr.addClass('shown');
@@ -363,13 +370,10 @@
           }
         });
 
-        // sorteren op header: géén refetch, alleen child-render heropbouwen
         dt.off('order.dt').on('order.dt', function(){
-          // verwijder alle children en heropen wat open stond, in nieuwe volgorde
           $('.level2, .level3').remove();
           $('.level1').removeClass('shown').find('.arrow').text('▶');
 
-          // doorloop de zichtbare level1 in nieuwe volgorde
           $('#leadsTable tbody tr.level1').each(function(){
             const tr = $(this);
             const row = dt.row(tr);
@@ -379,12 +383,9 @@
             const node = l1Map.get(data.key);
             if (!node) return;
 
-            // open level1 opnieuw met sorting volgens header
             expandLevel1(tr, node, dt);
             tr.addClass('shown');
             tr.find('.arrow').first().text('▼');
-
-            // open eventuele level2’s die in state staan gebeurt in expandLevel1()
           });
         });
 
@@ -392,25 +393,27 @@
         setStatus('Bijgewerkt: ' + now.toLocaleTimeString('nl-NL'));
       } catch (e) {
         console.error(e);
-        alert('Kon dashboard data niet laden.');
+        setStatus('');
+        alert(e?.message || 'Kon dashboard data niet laden.');
       } finally {
-        showLoader(false);
+        showLoader(false); applyBtn.disabled = false;
       }
     }
 
     document.getElementById('apply').addEventListener('click', loadDataAndRender);
 
-    // Init met filters
+    // Default: laatste 3 dagen incl. vandaag
     (function setDefaultDates(){
       const toISO = (d)=>d.toISOString().slice(0,10);
-      const now=new Date(), past=new Date(); past.setDate(now.getDate()-30);
-      document.getElementById('fromDate').value = toISO(past);
-      document.getElementById('toDate').value   = toISO(now);
+      const to = new Date();
+      const from = new Date(); from.setDate(to.getDate() - 2); // 3 dagen inclusief vandaag
+      document.getElementById('fromDate').value = toISO(from);
+      document.getElementById('toDate').value   = toISO(to);
     })();
 
     (async () => {
       await fetchFilters();
-      await loadDataAndRender(); // eerste load
+      await loadDataAndRender();
     })();
   </script>
 </body>
