@@ -1,11 +1,13 @@
 // /api/dashboard-aggregate.js
-// Hybride aggregatie:
-// - Topniveau (per dag): DISTINCT t_id + SUM(cost) via REST (lichte payload).
-// - Drilldown (dag -> affiliate -> offer [+ campaign_id-info]): via GraphQL aggregate.
-// Filters: offer_id, campaign_id, affiliate_id, sub_id, date_from, date_to (date_to inclusief).
+// Hybride aggregatie (range ≤ 3 dagen, campagne 925 uitgesloten).
+// - L1 (per dag): DISTINCT t_id + SUM(cost) via REST.
+// - Drilldown (dag → affiliate → offer [+ campaign_id-info]): via GraphQL aggregate.
 
 const DIRECTUS_URL = (process.env.DIRECTUS_URL || '').replace(/\/+$/, '');
 const DIRECTUS_TOKEN = process.env.DIRECTUS_TOKEN || '';
+
+const MAX_DAYS = 3;                 // hard cap
+const EXCLUDED_CAMPAIGN = '925';    // global exclude
 
 function setCors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -56,10 +58,32 @@ function labelFor(level, key) {
   return key || '—';
 }
 
+// Clamp & valideer datumbereik tot MAX_DAYS (inclusief end)
+function clampRange(date_from, date_to) {
+  const today = new Date();
+  const to = date_to ? new Date(date_to) : today;
+  const from = date_from ? new Date(date_from) : new Date(to);
+
+  const minFrom = new Date(to);
+  minFrom.setDate(to.getDate() - (MAX_DAYS - 1));
+
+  const clampedFrom = from < minFrom ? minFrom : from;
+  const clampedTo = to;
+
+  const days = Math.ceil((clampedTo - clampedFrom) / 86400000) + 1;
+  if (days > MAX_DAYS) {
+    return { error: `Date range too large (${days}d). Max ${MAX_DAYS} days.` };
+  }
+  return {
+    date_from: clampedFrom.toISOString().slice(0, 10),
+    date_to: clampedTo.toISOString().slice(0, 10),
+  };
+}
+
 /* ---------------- REST: DISTINCT t_id per dag (en sum(cost)) ---------------- */
 async function fetchDistinctPerDay({ offer_id, campaign_id, affiliate_id, sub_id, date_from, date_to }) {
   const dayMap = new Map(); // yyyy-mm-dd -> { set:Set<t_id>, cost:number }
-  const pageSize = 5000;
+  const pageSize = 2000; // iets lager, stabieler
   let offset = 0;
 
   while (true) {
@@ -74,6 +98,9 @@ async function fetchDistinctPerDay({ offer_id, campaign_id, affiliate_id, sub_id
     if (campaign_id)  p.append('filter[campaign_id][_eq]', campaign_id);
     if (affiliate_id) p.append('filter[affiliate_id][_eq]', affiliate_id);
     if (sub_id)       p.append('filter[sub_id][_eq]', sub_id);
+
+    // globale uitsluiting
+    p.append('filter[campaign_id][_neq]', EXCLUDED_CAMPAIGN);
 
     const url = `${DIRECTUS_URL}/items/Databowl_lead_events?${p.toString()}`;
     const r = await fetch(url, { headers: { Authorization: `Bearer ${DIRECTUS_TOKEN}` } });
@@ -101,7 +128,7 @@ async function fetchDistinctPerDay({ offer_id, campaign_id, affiliate_id, sub_id
     offset += pageSize;
   }
 
-  // retourneer als plain objecten
+  // plain objecten
   const out = new Map(); // day -> { leads:number, cost:number }
   for (const [day, { set, cost }] of dayMap.entries()) {
     out.set(day, { leads: set.size, cost });
@@ -126,7 +153,7 @@ async function fetchGraphGroups({ offer_id, campaign_id, affiliate_id, sub_id, d
     }
   `;
 
-  const filter = { };
+  const filter = {};
   if (date_from || date_to) {
     filter.created_at = {};
     if (date_from) filter.created_at._gte = date_from;
@@ -136,6 +163,11 @@ async function fetchGraphGroups({ offer_id, campaign_id, affiliate_id, sub_id, d
   if (campaign_id)  filter.campaign_id  = { _eq: campaign_id };
   if (affiliate_id) filter.affiliate_id = { _eq: affiliate_id };
   if (sub_id)       filter.sub_id       = { _eq: sub_id };
+
+  // globale uitsluiting
+  filter.campaign_id = filter.campaign_id
+    ? { ...filter.campaign_id, _neq: EXCLUDED_CAMPAIGN }
+    : { _neq: EXCLUDED_CAMPAIGN };
 
   const pageSize = 2000;
   let offset = 0;
@@ -174,20 +206,19 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
 
+  // korte CDN-cache
+  res.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate=600');
+
   try {
     const {
       offer_id, campaign_id, affiliate_id, sub_id,
-      date_from, date_to,
       order = 'day,affiliate,offer',
     } = req.query;
 
-    // Welke kolommen tonen we op L1/L2/L3
-    const levels = order.split(',').map(s => s.trim()).map(s => {
-      if (s === 'affiliate_id') return 'affiliate';
-      if (s === 'offer_id') return 'offer';
-      return s; // 'day' | 'affiliate' | 'offer'
-    });
-    const [L1, L2, L3] = levels;
+    // range uit query clampen naar MAX_DAYS
+    const cr = clampRange(req.query.date_from, req.query.date_to);
+    if (cr.error) return res.status(400).json({ error: cr.error });
+    const { date_from, date_to } = cr;
 
     // 1) Unieke leads + kosten per dag (correct, zonder dubbeltelling)
     const perDayDistinct = await fetchDistinctPerDay({ offer_id, campaign_id, affiliate_id, sub_id, date_from, date_to });
@@ -207,7 +238,6 @@ export default async function handler(req, res) {
 
       let dayNode = dayMap.get(dayKey);
       if (!dayNode) {
-        // init met 0; we overschrijven zo met perDayDistinct
         dayNode = { key: dayKey, label: labelFor('day', dayKey), leads: 0, cost: 0, children: new Map() };
         dayMap.set(dayKey, dayNode);
       }
@@ -229,12 +259,11 @@ export default async function handler(req, res) {
       const cnt = Number(g?.countDistinct?.t_id || 0);
       const sum = toNumber(g?.sum?.cost || 0);
 
-      // kinderen krijgen hun eigen counts (kunnen optellen tot > dag)
+      // kinderen krijgen hun eigen counts
       l3.leads += cnt;
       l3.cost  += sum;
       l2.leads += cnt;
       l2.cost  += sum;
-      // dagNode.leads/cost NIET hier ophogen (dat veroorzaakt overcount)
     }
 
     // 4) Overschrijf L1 met echte DISTINCT per dag uit REST
@@ -244,8 +273,8 @@ export default async function handler(req, res) {
         dayNode = { key: dayKey, label: labelFor('day', dayKey), leads: 0, cost: 0, children: new Map() };
         dayMap.set(dayKey, dayNode);
       }
-      dayNode.leads = totals.leads; // correcte unieke leads per dag
-      dayNode.cost  = totals.cost;  // som van cost per dag
+      dayNode.leads = totals.leads;
+      dayNode.cost  = totals.cost;
     }
 
     // 5) Map → arrays + sort
