@@ -82,7 +82,7 @@ function mapPayload(body) {
 
     return {
       lead_id,
-      status, // leesbaar label
+      status,
       revenue,
       cost,
       currency,
@@ -93,7 +93,7 @@ function mapPayload(body) {
       sub_id,
       t_id,
       created_at,
-      raw: { original: b, email_hash, status_id: statusId }, // numerieke code blijft beschikbaar
+      raw: { original: b, email_hash, status_id: statusId },
     };
   }
 
@@ -104,10 +104,9 @@ function mapPayload(body) {
   const meta = b.meta || b.metadata || {};
 
   const statusRaw = msg.status ?? b.status ?? ld.status ?? null;
-  // Als numeriek (string/number) → map, anders gebruik raw tekst
   const status =
     statusRaw != null && String(Number(statusRaw)) === String(statusRaw)
-      ? STATUS_MAP[String(statusRaw)] || `Unknown (${String(statusRaw)})`
+      ? STATUS_MAP[String(statusRaw)] || `Unknown (${String(statusRaw})`
       : statusRaw || 'unknown';
 
   const created_at = msg.created_at ?? ld.created_at ?? b.created_at ?? new Date().toISOString();
@@ -161,15 +160,12 @@ async function createEvent(event) {
 
   if (r.ok) return { created: await r.json() };
 
-  // Unieke constraint? → skip
   let txt = await r.text();
   try {
     const j = JSON.parse(txt);
     const nonUnique = j?.errors?.some((e) => e?.extensions?.code === 'RECORD_NOT_UNIQUE');
     if (nonUnique) return { skipped: true };
-  } catch {
-    // ignore
-  }
+  } catch {}
   throw new Error(`Directus create ${r.status}: ${txt}`);
 }
 
@@ -206,7 +202,7 @@ export default async function handler(req, res) {
 
     // Idempotency via unieke kolom event_key (zonder read)
     const event_key = makeKey(event);
-    event.event_key = event_key; // <-- vereist veld in Directus, Unique
+    event.event_key = event_key;
     event.raw = { ...(event.raw || {}), key: event_key };
 
     const result = await createEvent(event);
