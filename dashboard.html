@@ -17,7 +17,6 @@
     .table-wrap { position: relative; }
     .statusbar { text-align: right; font-size: 12px; margin: 6px 0 8px; opacity:.8; }
 
-    /* Loader overlay */
     .loader {
       position:absolute; inset:0; display:none; align-items:center; justify-content:center;
       background: rgba(255,255,255,.7); backdrop-filter:saturate(150%) blur(2px); z-index: 2;
@@ -29,7 +28,6 @@
     #leadsTable td, #leadsTable th { border-top: 1px solid #e8edf3; }
     .totals { margin-top: 10px; font-weight: 600; }
 
-    /* Pastel niveaus (échte tabelrijen) */
     .level1 td { background: #f6f9ff; }
     .level1.shown td { background: #eef3ff; }
     .level2 td { background: #f7f7f9; }
@@ -87,21 +85,17 @@
   <script>
     const BASE = ''; // zelfde origin
 
-    /* ======= STATE ======= */
     let cachedOrder = ['day','affiliate','offer'];
-    let cachedTree = [];
     let l1Map = new Map();
     let l2MapPerL1 = new Map();
-
     const openL1 = new Set();
     const openL2 = new Map();
+    const applyBtn = document.getElementById('apply');
 
     const toMoney = (n) => Number(n || 0).toFixed(2);
     const showLoader = (on) => document.getElementById('loader').classList.toggle('show', !!on);
     const setStatus = (txt) => document.getElementById('statusbar').textContent = txt || '';
-    const applyBtn = document.getElementById('apply');
 
-    /* ======= DATA ======= */
     async function fetchFilters() {
       const r = await fetch(`${BASE}/api/dashboard-filters`);
       if (!r.ok) throw new Error('Kon filters niet laden');
@@ -111,7 +105,7 @@
         values.forEach(v => { const o = document.createElement('option'); o.value=v; o.textContent=v; sel.appendChild(o); });
       };
       fill('offerFilter', data.offer_ids);
-      fill('campaignFilter', data.campaign_ids); // 925 zit hier niet in (API exclude)
+      fill('campaignFilter', data.campaign_ids); // 925 zit hier niet in (READ exclude)
       fill('affiliateFilter', data.affiliate_ids);
       fill('subFilter', data.sub_ids);
     }
@@ -146,7 +140,7 @@
         throw new Error(human);
       }
       const { data } = await r.json();
-      return data; // { order:[...], tree:[...] }
+      return data;
     }
 
     function indexMaps(tree) {
@@ -171,19 +165,12 @@
         `Totaal: ${totalLeads.toLocaleString('nl-NL')} leads • Kosten € ${toMoney(totalCost)}`;
     }
 
-    /* ======= SORTERING ======= */
-    function getHeaderOrder(table) { // [colIdx, dir]
-      const order = table ? table.order() : [];
-      return Array.isArray(order) && order.length ? order[0] : [0,'asc'];
-    }
+    function getHeaderOrder(table) { const order = table ? table.order() : []; return Array.isArray(order) && order.length ? order[0] : [0,'asc']; }
     function sortNodesByHeader(nodes, table) {
       const [col, dir] = getHeaderOrder(table);
       const mult = dir === 'asc' ? 1 : -1;
-
       if (col === 3) return nodes.sort((a,b)=> (Number(a.leads||0)-Number(b.leads||0))*mult);
       if (col === 4) return nodes.sort((a,b)=> (Number(a.cost ||0)-Number(b.cost ||0))*mult);
-
-      // op label
       return nodes.sort((a,b)=>{
         const av=(a.label??'')+'', bv=(b.label??'')+'';
         const an=Number(av), bn=Number(bv);
@@ -192,7 +179,6 @@
       });
     }
 
-    /* ======= RENDER ======= */
     function toTopRows(tree) {
       return tree.map(n=>({
         key: n.key ?? n.label,
@@ -203,18 +189,8 @@
       }));
     }
 
-    function makeTd(text, cls='') {
-      const td = document.createElement('td');
-      if (cls) td.className = cls;
-      td.textContent = text ?? '';
-      return td;
-    }
-    function makeTdHTML(html, cls='') {
-      const td = document.createElement('td');
-      if (cls) td.className = cls;
-      td.innerHTML = html;
-      return td;
-    }
+    function makeTd(text, cls='') { const td = document.createElement('td'); if (cls) td.className = cls; td.textContent = text ?? ''; return td; }
+    function makeTdHTML(html, cls='') { const td = document.createElement('td'); if (cls) td.className = cls; td.innerHTML = html; return td; }
 
     function expandLevel1(tr, node, table) {
       const k1 = node.key ?? node.label;
@@ -222,7 +198,6 @@
 
       children.forEach(c=>{
         const k2 = c.key ?? c.label;
-
         const rowEl = document.createElement('tr');
         rowEl.className = 'level2';
         rowEl.appendChild(makeTd(''));
@@ -302,13 +277,11 @@
       }
     }
 
-    /* ======= FLOW ======= */
     async function loadDataAndRender() {
       showLoader(true); setStatus('Data ophalen…'); applyBtn.disabled = true;
       try {
         const { order, tree } = await fetchTree();
         cachedOrder = order;
-        cachedTree = tree;
         indexMaps(tree);
 
         const topRows = toTopRows(tree);
@@ -406,7 +379,7 @@
     (function setDefaultDates(){
       const toISO = (d)=>d.toISOString().slice(0,10);
       const to = new Date();
-      const from = new Date(); from.setDate(to.getDate() - 2); // 3 dagen inclusief vandaag
+      const from = new Date(); from.setDate(to.getDate() - 2); // 3 dagen incl. vandaag
       document.getElementById('fromDate').value = toISO(from);
       document.getElementById('toDate').value   = toISO(to);
     })();
