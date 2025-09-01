@@ -68,7 +68,7 @@ function mapPayload(body) {
     const t_id = FIELD_IDS.t_id ? data[FIELD_IDS.t_id] ?? null : null;
 
     const statusId = p.statusId != null ? String(p.statusId) : null;
-    const status = statusId ? (STATUS_MAP[statusId] || `Unknown (${statusId})`) : 'unknown';
+    const status = statusId ? (STATUS_MAP[statusId] || `Unknown (${String(statusId)})`) : 'unknown';
 
     const created_at = p.receivedAt ? asISOFromUnix(p.receivedAt) : new Date().toISOString();
     const revenue = normMoney(p.normalRevenue ?? p.revenue);
@@ -82,7 +82,7 @@ function mapPayload(body) {
 
     return {
       lead_id,
-      status,
+      status, // leesbaar label
       revenue,
       cost,
       currency,
@@ -93,7 +93,7 @@ function mapPayload(body) {
       sub_id,
       t_id,
       created_at,
-      raw: { original: b, email_hash, status_id: statusId },
+      raw: { original: b, email_hash, status_id: statusId }, // numerieke code blijft beschikbaar
     };
   }
 
@@ -104,9 +104,10 @@ function mapPayload(body) {
   const meta = b.meta || b.metadata || {};
 
   const statusRaw = msg.status ?? b.status ?? ld.status ?? null;
+  // Als numeriek (string/number) → map, anders gebruik raw tekst
   const status =
     statusRaw != null && String(Number(statusRaw)) === String(statusRaw)
-      ? STATUS_MAP[String(statusRaw)] || `Unknown (${String(statusRaw})`
+      ? STATUS_MAP[String(statusRaw)] || `Unknown (${String(statusRaw)})`
       : statusRaw || 'unknown';
 
   const created_at = msg.created_at ?? ld.created_at ?? b.created_at ?? new Date().toISOString();
@@ -160,12 +161,15 @@ async function createEvent(event) {
 
   if (r.ok) return { created: await r.json() };
 
+  // Unieke constraint? → skip
   let txt = await r.text();
   try {
     const j = JSON.parse(txt);
     const nonUnique = j?.errors?.some((e) => e?.extensions?.code === 'RECORD_NOT_UNIQUE');
     if (nonUnique) return { skipped: true };
-  } catch {}
+  } catch {
+    // ignore
+  }
   throw new Error(`Directus create ${r.status}: ${txt}`);
 }
 
@@ -202,10 +206,21 @@ export default async function handler(req, res) {
 
     // Idempotency via unieke kolom event_key (zonder read)
     const event_key = makeKey(event);
-    event.event_key = event_key;
+    event.event_key = event_key; // <-- vereist veld in Directus, Unique
     event.raw = { ...(event.raw || {}), key: event_key };
 
     const result = await createEvent(event);
+
+    // optionele debug header als je ?debug=1 meestuurt
+    if (req.query?.debug === '1') {
+      res.setHeader('X-Databowl-Debug', JSON.stringify({
+        lead_id: event.lead_id,
+        event_key,
+        created: !!result.created,
+        skipped: !!result.skipped
+      }));
+    }
+
     return res.status(200).json({ ok: true, ...result });
   } catch (e) {
     console.error('[databowl-webhook] error:', e);
