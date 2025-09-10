@@ -1,9 +1,8 @@
 // /api/etl-sync.js
 // Incrementiële sync: Directus -> Supabase (staging + dedupe)
-// - Leest batches uit Directus (created_at > cursor, excl. campaign 925)
-// - Schrijft 1) events_staging (upsert op event_key)
-// - Schrijft 2) lead_uniques_day_grp (upsert ignoreDuplicates op PK)
-// - Cursor in 'sync_state' (id='directus-events')
+// - created_at > cursor, excl. campaign 925
+// - staging upsert op event_key
+// - dedupe upsert met NOT NULL normalisatie (lege string) op PK-velden
 
 import { createClient } from '@supabase/supabase-js';
 
@@ -15,7 +14,7 @@ const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE || '';
 const sb = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE, { auth: { persistSession: false } });
 
 const EXCLUDED_CAMPAIGN = '925';
-const BATCH = 1000; // Directus page size
+const BATCH = 1000;
 
 function setCors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -25,7 +24,6 @@ function setCors(res) {
 
 const toISO = (s) => new Date(s).toISOString();
 
-// yyyy-mm-dd in Europe/Amsterdam
 function dateKeyNL(iso) {
   return new Intl.DateTimeFormat('sv-SE', {
     timeZone: 'Europe/Amsterdam',
@@ -35,13 +33,12 @@ function dateKeyNL(iso) {
   }).format(new Date(iso));
 }
 
-// === Cursor helpers ===
+// cursor
 async function getSyncCursor() {
   const { data, error } = await sb.from('sync_state').select('*').eq('id', 'directus-events').maybeSingle();
   if (error) throw error;
   return data || {};
 }
-
 async function setSyncCursor({ last_created_at, last_event_key }) {
   const { error } = await sb
     .from('sync_state')
@@ -49,48 +46,32 @@ async function setSyncCursor({ last_created_at, last_event_key }) {
   if (error) throw error;
 }
 
-// === Directus fetch (1 page) ===
+// haal pagina uit Directus
 async function fetchDirectusPage({ lastCreatedAt, page = 1 }) {
   if (!DIRECTUS_URL || !DIRECTUS_TOKEN) throw new Error('Missing DIRECTUS_URL or DIRECTUS_TOKEN env vars');
 
   const url = new URL(`${DIRECTUS_URL}/items/Databowl_lead_events`);
   url.searchParams.set('fields', [
-    'event_key',
-    'lead_id',
-    'status',
-    'revenue',
-    'cost',
-    'currency',
-    'offer_id',
-    'campaign_id',
-    'affiliate_id',
-    'sub_id',
-    't_id',
-    'created_at',
-    'raw',
+    'event_key','lead_id','status','revenue','cost','currency',
+    'offer_id','campaign_id','affiliate_id','sub_id','t_id','created_at','raw',
   ].join(','));
   url.searchParams.set('limit', String(BATCH));
   url.searchParams.set('page', String(page));
-
-  const filter = {
+  url.searchParams.set('filter', JSON.stringify({
     _and: [
       lastCreatedAt ? { created_at: { _gt: lastCreatedAt } } : {},
       { campaign_id: { _neq: EXCLUDED_CAMPAIGN } },
     ],
-  };
-  url.searchParams.set('filter', JSON.stringify(filter));
+  }));
   url.searchParams.set('sort', 'created_at');
 
   const r = await fetch(url.toString(), { headers: { Authorization: `Bearer ${DIRECTUS_TOKEN}` } });
-  let body;
-  try { body = await r.json(); } catch { body = {}; }
+  let body; try { body = await r.json(); } catch { body = {}; }
   if (!r.ok) throw new Error(`Directus ${r.status}: ${JSON.stringify(body)}`);
   return Array.isArray(body.data) ? body.data : [];
 }
 
-// === Supabase writes ===
-
-// 1) staging upsert by event_key
+// staging upsert
 async function upsertStaging(rows) {
   if (!rows.length) return;
   const payload = rows.map((r) => ({
@@ -108,22 +89,22 @@ async function upsertStaging(rows) {
     created_at: r.created_at ? toISO(r.created_at) : new Date().toISOString(),
     raw: r.raw || null,
   }));
-
   const { error } = await sb.from('events_staging').upsert(payload, { onConflict: 'event_key' });
   if (error) throw error;
 }
 
-// 2) dedupe upsert (ignore duplicates on composite PK)
+// dedupe upsert (PK: day, affiliate_id, offer_id, campaign_id, t_id) -> alle PK velden NOT NULL
 async function upsertDedupe(rows) {
   if (!rows.length) return;
 
   const payload = rows
-    .filter((r) => r.t_id) // t_id vereist voor distinct
+    .filter((r) => r.t_id) // t_id is vereist
     .map((r) => ({
       day: dateKeyNL(r.created_at),
-      affiliate_id: r.affiliate_id || null,
-      offer_id: r.offer_id || null,
-      campaign_id: r.campaign_id || null,
+      // LET OP: NOT NULL normalisatie naar lege string:
+      affiliate_id: r.affiliate_id ?? '',
+      offer_id:     r.offer_id     ?? '',
+      campaign_id:  r.campaign_id  ?? '',
       t_id: r.t_id,
       cost: r.cost != null ? Number(r.cost) : null,
     }));
@@ -168,7 +149,7 @@ export default async function handler(req, res) {
       });
 
       page += 1;
-      await new Promise((r) => setTimeout(r, 150)); // kleine pauze
+      await new Promise((r) => setTimeout(r, 150));
     }
 
     res.status(200).json({
