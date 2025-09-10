@@ -3,7 +3,7 @@
 // Drilldown (dag -> affiliate -> offer) uit lead_uniques_day_grp
 
 const SUPABASE_URL = (process.env.SUPABASE_URL || '').replace(/\/+$/, '');
-const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE || '';
 
 const MAX_DAYS = 3;
 const EXCLUDED_CAMPAIGN = '925';
@@ -44,8 +44,8 @@ async function supaGet(path, qs) {
   const q = qs ? `?${qs}` : '';
   const r = await fetch(`${SUPABASE_URL}/rest/v1/${path}${q}`, {
     headers: {
-      apikey: SUPABASE_SERVICE_ROLE_KEY,
-      Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+      apikey: SUPABASE_SERVICE_ROLE,
+      Authorization: `Bearer ${SUPABASE_SERVICE_ROLE}`,
       'Content-Type': 'application/json',
       Prefer: 'count=exact',
     },
@@ -65,8 +65,8 @@ export default async function handler(req, res) {
   res.setHeader('Cache-Control', 's-maxage=120, stale-while-revalidate=300');
 
   try {
-    if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
-      return res.status(500).json({ error: 'Missing SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY' });
+    if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE) {
+      return res.status(500).json({ error: 'Missing SUPABASE_URL / SUPABASE_SERVICE_ROLE' });
     }
 
     const { offer_id, campaign_id, affiliate_id, sub_id, order='day,affiliate,offer' } = req.query;
