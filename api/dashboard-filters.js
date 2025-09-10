@@ -1,4 +1,6 @@
-// --- REPLACE THE WHOLE FILE WITH THIS FINAL VERSION ---
+// --- COMPLETE FILE ---
+// Haalt unieke waarden voor filters op uit Supabase tabel `lead_uniques_day_grp`.
+// Campagne 925 is uitgesloten uit de lijst.
 
 const SUPABASE_URL = (process.env.SUPABASE_URL || '').replace(/\/+$/, '');
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
@@ -17,8 +19,8 @@ async function supaGet(path, qs) {
       apikey: SUPABASE_KEY,
       Authorization: `Bearer ${SUPABASE_KEY}`,
       'Content-Type': 'application/json',
-      Prefer: 'count=exact',
-    },
+      Prefer: 'count=exact'
+    }
   });
   if (!r.ok) {
     const txt = await r.text().catch(()=> '');
@@ -37,27 +39,24 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: 'Missing SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY' });
     }
 
-    // Voor filters is het voldoende om uit de geaggregeerde tabel te lezen.
-    // Pas de naam aan als je een andere gebruikt.
-    const tableName = 'lead_uniques_day_grp';
+    // We vragen alle kolommen op en dedupen in Node (met distinct=true scheelt payload).
+    const params = new URLSearchParams();
+    params.append('select', 'offer_id,campaign_id,affiliate_id,sub_id');
+    params.append('campaign_id', `neq.${EXCLUDED_CAMPAIGN}`);
+    params.append('distinct', 'true'); // PostgREST distinct
+    params.append('order', 'offer_id.asc,campaign_id.asc,affiliate_id.asc');
 
-    // Haal alleen de kolommen op die we nodig hebben, met globale exclude 925.
-    const p = new URLSearchParams();
-    p.append('select', 'offer_id,campaign_id,affiliate_id,sub_id');
-    p.append('campaign_id', `neq.${EXCLUDED_CAMPAIGN}`);
-    p.append('limit', '200000'); // veilig hoog, dedupen we client-side
+    const rows = await supaGet('lead_uniques_day_grp', params.toString());
+    const uniq = (arr) => Array.from(new Set(arr.filter(v => v !== null && v !== undefined && `${v}`.length))).sort((a,b)=>(`${a}`).localeCompare(`${b}`,'nl',{numeric:true}));
 
-    const rows = await supaGet(tableName, p.toString());
-    const uniq = (arr) => Array.from(new Set(arr.filter(v => v !== null && v !== undefined && v !== ''))).sort((a,b)=>(''+a).localeCompare(''+b,'nl',{numeric:true}));
-
-    const data = {
+    const result = {
       offer_ids:     uniq(rows.map(r => r.offer_id)),
       campaign_ids:  uniq(rows.map(r => r.campaign_id)),
       affiliate_ids: uniq(rows.map(r => r.affiliate_id)),
-      sub_ids:       uniq(rows.map(r => r.sub_id)),
+      sub_ids:       uniq(rows.map(r => r.sub_id)), // kolom is optioneel; resulteert dan gewoon in []
     };
 
-    return res.status(200).json({ data });
+    return res.status(200).json({ data: result });
   } catch (e) {
     console.error('[dashboard-filters] error:', e);
     return res.status(500).json({ error: String(e?.message || e) });
