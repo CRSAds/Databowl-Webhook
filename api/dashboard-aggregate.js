@@ -1,22 +1,30 @@
-// /api/dashboard-aggregate.js
-// Hybride aggregatie (range ≤ 3 dagen, campagne 925 uitgesloten in READ):
-// - L1 (per dag): DISTINCT t_id + SUM(cost) via REST.
-// - Drilldown (dag → affiliate → offer [+ campaign_id-info]): via GraphQL aggregate.
+// /api/dashboard-aggregate.js  (Supabase versie)
+// Range ≤ 3 dagen (inclusief end), campagne 925 uitgesloten (read-only).
+// Data komt uit de ETL-aggregatietabel `lead_uniques_day_grp` op Supabase.
+// Optioneel: als de view/tabel `lead_uniques_day` bestaat gebruiken we die voor
+// correcte L1 (per dag) DISTINCT totals. Anders vallen we terug op som van kinderen.
 
-const DIRECTUS_URL = (process.env.DIRECTUS_URL || '').replace(/\/+$/, '');
-const DIRECTUS_TOKEN = process.env.DIRECTUS_TOKEN || '';
+const SUPABASE_URL = (process.env.SUPABASE_URL || '').replace(/\/+$/, '');
+const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE || '';
 
-const MAX_DAYS = 3;                 // hard cap
-const EXCLUDED_CAMPAIGN = '925';    // global exclude (READ ONLY)
+const MAX_DAYS = 3;
+const EXCLUDED_CAMPAIGN = '925';
 
+// --- helpers ---
 function setCors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 }
 
-// YYYY-MM-DD bucket in Europe/Amsterdam
-function dateKeyNL(value) {
+function mustEnv(name, val) {
+  if (!val) {
+    throw new Error(`Missing env ${name}`);
+  }
+}
+
+function svDateKey(value) {
+  // yyyy-mm-dd in Europe/Amsterdam
   const d = new Date(value);
   return new Intl.DateTimeFormat('sv-SE', {
     timeZone: 'Europe/Amsterdam',
@@ -24,29 +32,6 @@ function dateKeyNL(value) {
     month: '2-digit',
     day: '2-digit',
   }).format(d);
-}
-
-function nextDayStr(dStr) {
-  if (!dStr) return null;
-  const d = new Date(dStr);
-  d.setDate(d.getDate() + 1);
-  return d.toISOString().slice(0, 10);
-}
-
-function toNumber(v) {
-  if (v == null) return 0;
-  if (typeof v === 'number') return Number.isFinite(v) ? v : 0;
-  let s = String(v).trim().replace(/[€\s]/g, '');
-  if (s.indexOf('.') === -1 && s.indexOf(',') > -1) s = s.replace(',', '.');
-  const n = Number(s);
-  return Number.isFinite(n) ? n : 0;
-}
-
-function sortTopByLevel(level) {
-  return (a, b) => {
-    if (level === 'day') return a.key < b.key ? 1 : -1; // nieuwste dag eerst
-    return ('' + a.key).localeCompare('' + b.key, 'nl', { numeric: true });
-  };
 }
 
 function labelFor(level, key) {
@@ -58,7 +43,13 @@ function labelFor(level, key) {
   return key || '—';
 }
 
-// Clamp & valideer datumbereik tot MAX_DAYS (inclusief end)
+function sortTop(level) {
+  return (a, b) => {
+    if (level === 'day') return a.key < b.key ? 1 : -1; // nieuwste dag eerst
+    return ('' + a.key).localeCompare('' + b.key, 'nl', { numeric: true });
+  };
+}
+
 function clampRange(date_from, date_to) {
   const today = new Date();
   const to = date_to ? new Date(date_to) : today;
@@ -75,164 +66,137 @@ function clampRange(date_from, date_to) {
     return { error: `Date range too large (${days}d). Max ${MAX_DAYS} days.` };
   }
   return {
-    date_from: clampedFrom.toISOString().slice(0, 10),
-    date_to: clampedTo.toISOString().slice(0, 10),
+    from: clampedFrom.toISOString().slice(0, 10),
+    to: clampedTo.toISOString().slice(0, 10),
   };
 }
 
-/* ---------------- REST: DISTINCT t_id per dag (en sum(cost)) ---------------- */
-async function fetchDistinctPerDay({ offer_id, campaign_id, affiliate_id, sub_id, date_from, date_to }) {
-  const dayMap = new Map(); // yyyy-mm-dd -> { set:Set<t_id>, cost:number }
-  const pageSize = 2000; // iets lager, stabieler
-  let offset = 0;
-
-  while (true) {
-    const p = new URLSearchParams();
-    p.append('limit', String(pageSize));
-    p.append('offset', String(offset));
-    p.append('fields', 'created_at,t_id,cost');
-
-    if (date_from) p.append('filter[created_at][_gte]', date_from);
-    if (date_to)   p.append('filter[created_at][_lt]', nextDayStr(date_to));
-    if (offer_id)     p.append('filter[offer_id][_eq]', offer_id);
-    if (campaign_id)  p.append('filter[campaign_id][_eq]', campaign_id);
-    if (affiliate_id) p.append('filter[affiliate_id][_eq]', affiliate_id);
-    if (sub_id)       p.append('filter[sub_id][_eq]', sub_id);
-
-    // globale uitsluiting (READ)
-    p.append('filter[campaign_id][_neq]', EXCLUDED_CAMPAIGN);
-
-    const url = `${DIRECTUS_URL}/items/Databowl_lead_events?${p.toString()}`;
-    const r = await fetch(url, { headers: { Authorization: `Bearer ${DIRECTUS_TOKEN}` } });
-    const j = await r.json();
-    if (!r.ok) throw new Error(`REST distinct fetch failed: ${JSON.stringify(j)}`);
-
-    const rows = Array.isArray(j.data) ? j.data : [];
-    if (!rows.length) break;
-
-    for (const row of rows) {
-      const day = dateKeyNL(row.created_at);
-      const tId = (row?.t_id && String(row.t_id).trim()) || null;
-      const cost = toNumber(row?.cost);
-
-      let bucket = dayMap.get(day);
-      if (!bucket) {
-        bucket = { set: new Set(), cost: 0 };
-        dayMap.set(day, bucket);
-      }
-      if (tId) bucket.set.add(tId);
-      bucket.cost += cost;
-    }
-
-    if (rows.length < pageSize) break;
-    offset += pageSize;
-  }
-
-  const out = new Map(); // day -> { leads:number, cost:number }
-  for (const [day, { set, cost }] of dayMap.entries()) {
-    out.set(day, { leads: set.size, cost });
-  }
-  return out;
+function toMoneyNumber(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
 }
 
-/* ---------------- GraphQL: drilldown per dag -> affiliate -> offer ---------------- */
-async function fetchGraphGroups({ offer_id, campaign_id, affiliate_id, sub_id, date_from, date_to }) {
-  const GQL = `
-    query($filter: Databowl_lead_events_filter, $limit: Int, $offset: Int){
-      Databowl_lead_events_aggregated(
-        groupBy: ["created_at","affiliate_id","offer_id","campaign_id"],
-        filter: $filter,
-        limit: $limit,
-        offset: $offset
-      ){
-        group
-        countDistinct { t_id }
-        sum { cost }
-      }
-    }
-  `;
+// --- Supabase REST helper ---
+async function sbGet(path, params = {}) {
+  mustEnv('SUPABASE_URL', SUPABASE_URL);
+  mustEnv('SUPABASE_SERVICE_ROLE', SUPABASE_SERVICE_ROLE);
 
-  const filter = {};
-  if (date_from || date_to) {
-    filter.created_at = {};
-    if (date_from) filter.created_at._gte = date_from;
-    if (date_to)   filter.created_at._lt  = nextDayStr(date_to);
+  const usp = new URLSearchParams(params);
+  const url = `${SUPABASE_URL}/rest/v1/${path}${usp.toString() ? `?${usp}` : ''}`;
+
+  const r = await fetch(url, {
+    headers: {
+      apikey: SUPABASE_SERVICE_ROLE,
+      Authorization: `Bearer ${SUPABASE_SERVICE_ROLE}`,
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+      Prefer: 'count=exact',
+    },
+  });
+
+  // 404 op een view/tabel die niet bestaat → behandel als lege set
+  if (r.status === 404) return { data: [], ok: false, status: 404, text: await r.text() };
+
+  const txt = await r.text();
+  let data = [];
+  try { data = txt ? JSON.parse(txt) : []; } catch { /* ignore */ }
+
+  if (!r.ok) {
+    throw new Error(`Supabase ${path} ${r.status}: ${txt}`);
   }
-  if (offer_id)     filter.offer_id     = { _eq: offer_id };
-  if (campaign_id)  filter.campaign_id  = { _eq: campaign_id };
-  if (affiliate_id) filter.affiliate_id = { _eq: affiliate_id };
-  if (sub_id)       filter.sub_id       = { _eq: sub_id };
-
-  // globale uitsluiting (READ)
-  filter.campaign_id = filter.campaign_id
-    ? { ...filter.campaign_id, _neq: EXCLUDED_CAMPAIGN }
-    : { _neq: EXCLUDED_CAMPAIGN };
-
-  const pageSize = 2000;
-  let offset = 0;
-  const groups = [];
-
-  while (true) {
-    const body = {
-      query: GQL,
-      variables: { filter, limit: pageSize, offset }
-    };
-    const r = await fetch(`${DIRECTUS_URL}/graphql`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${DIRECTUS_TOKEN}`,
-      },
-      body: JSON.stringify(body),
-    });
-    const j = await r.json();
-    if (!r.ok || j.errors) throw new Error(`GraphQL aggregate failed: ${JSON.stringify(j.errors || j)}`);
-
-    const batch = j?.data?.Databowl_lead_events_aggregated || [];
-    if (!batch.length) break;
-    groups.push(...batch);
-
-    if (batch.length < pageSize) break;
-    offset += pageSize;
-  }
-
-  return groups;
+  return { data, ok: true, status: r.status };
 }
 
-/* ---------------- handler ---------------- */
+/**
+ * Haal drilldownregels op uit lead_uniques_day_grp
+ * Output-rijen bevatten: day, affiliate_id, offer_id, campaign_id, leads, total_cost
+ */
+async function fetchGroupRows({ from, to, offer_id, campaign_id, affiliate_id, sub_id }) {
+  // Baseselect
+  const select =
+    'select=day,affiliate_id,offer_id,campaign_id,leads,total_cost';
+
+  // Filters
+  const params = {
+    [select]: '',
+    'day=gte': from,
+    'day=lte': to,
+    // globale exclude
+    'campaign_id=neq': EXCLUDED_CAMPAIGN,
+    order: 'day.desc',
+  };
+
+  if (offer_id) params['offer_id=eq'] = offer_id;
+  if (campaign_id) params['campaign_id=eq'] = campaign_id;
+  if (affiliate_id) params['affiliate_id=eq'] = affiliate_id;
+  if (sub_id) params['sub_id=eq'] = sub_id; // alleen als je sub_id in de tabel hebt
+
+  const { data } = await sbGet('lead_uniques_day_grp', params);
+  return Array.isArray(data) ? data : [];
+}
+
+/**
+ * Totals per dag (distinct) – gebruikt `lead_uniques_day` als die bestaat,
+ * anders berekenen we de som van kinderen.
+ */
+async function fetchDayTotalsDistinct({ from, to, offer_id, campaign_id, affiliate_id, sub_id }) {
+  const select = 'select=day,leads,total_cost';
+
+  const params = {
+    [select]: '',
+    'day=gte': from,
+    'day=lte': to,
+    'campaign_id=neq': EXCLUDED_CAMPAIGN,
+    order: 'day.desc',
+  };
+  if (offer_id) params['offer_id=eq'] = offer_id;
+  if (campaign_id) params['campaign_id=eq'] = campaign_id;
+  if (affiliate_id) params['affiliate_id=eq'] = affiliate_id;
+  if (sub_id) params['sub_id=eq'] = sub_id;
+
+  const res = await sbGet('lead_uniques_day', params);
+  if (!res.ok) return []; // view bestaat niet → caller zal fallback doen
+
+  const rows = Array.isArray(res.data) ? res.data : [];
+  // normaliseer keys naar dezelfde types
+  return rows.map(r => ({
+    day: svDateKey(r.day || r.day_key || r.date || r.d),
+    leads: Number(r.leads || 0),
+    total_cost: toMoneyNumber(r.total_cost || 0),
+  }));
+}
+
 export default async function handler(req, res) {
   setCors(res);
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
 
-  // korte CDN-cache
+  // iets cachebaar op edge/CDN
   res.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate=600');
 
   try {
     const {
-      offer_id, campaign_id, affiliate_id, sub_id,
+      offer_id,
+      campaign_id,
+      affiliate_id,
+      sub_id,
       order = 'day,affiliate,offer',
     } = req.query;
 
     const cr = clampRange(req.query.date_from, req.query.date_to);
     if (cr.error) return res.status(400).json({ error: cr.error });
-    const { date_from, date_to } = cr;
 
-    // 1) unieke leads + kosten per dag
-    const perDayDistinct = await fetchDistinctPerDay({ offer_id, campaign_id, affiliate_id, sub_id, date_from, date_to });
+    // 1) haal alle leaf-rijen (dag → affiliate → offer)
+    const rows = await fetchGroupRows({ ...cr, offer_id, campaign_id, affiliate_id, sub_id });
 
-    // 2) drilldown aggregaties
-    const groups = await fetchGraphGroups({ offer_id, campaign_id, affiliate_id, sub_id, date_from, date_to });
+    // 2) bouw boom (dag → affiliate → offer)
+    const dayMap = new Map(); // dayKey → node
 
-    // 3) boom opbouwen
-    const dayMap = new Map();
-
-    for (const g of groups) {
-      const grp = g.group || {};
-      const dayKey = dateKeyNL(grp.created_at);
-      const affKey = (grp.affiliate_id ?? '') + '';
-      const offKey = (grp.offer_id ?? '') + '';
-      const campId = grp.campaign_id ?? null;
+    for (const r of rows) {
+      const dayKey = svDateKey(r.day);
+      const affKey = (r.affiliate_id ?? '') + '';
+      const offKey = (r.offer_id ?? '') + '';
+      const campId = r.campaign_id ?? null;
 
       let dayNode = dayMap.get(dayKey);
       if (!dayNode) {
@@ -252,45 +216,68 @@ export default async function handler(req, res) {
         l2.children.set(offKey, l3);
       }
 
-      const cnt = Number(g?.countDistinct?.t_id || 0);
-      const sum = toNumber(g?.sum?.cost || 0);
+      const leads = Number(r.leads || 0);
+      const cost = toMoneyNumber(r.total_cost || 0);
 
-      l3.leads += cnt;
-      l3.cost  += sum;
-      l2.leads += cnt;
-      l2.cost  += sum;
+      l3.leads += leads;
+      l3.cost  += cost;
+      l2.leads += leads;
+      l2.cost  += cost;
+      // L1 totals zetten we hier nog NIET (kan overcount geven) → stap 3
     }
 
-    // 4) Overschrijf L1 met echte DISTINCT per dag uit REST
-    for (const [dayKey, totals] of perDayDistinct.entries()) {
-      let dayNode = dayMap.get(dayKey);
-      if (!dayNode) {
-        dayNode = { key: dayKey, label: labelFor('day', dayKey), leads: 0, cost: 0, children: new Map() };
-        dayMap.set(dayKey, dayNode);
+    // 3) L1 totals: probeer DISTINCT totals uit `lead_uniques_day`. Fallback: som van kinderen.
+    const distinctTotals = await fetchDayTotalsDistinct({ ...cr, offer_id, campaign_id, affiliate_id, sub_id })
+      .catch(() => []);
+
+    const dtMap = new Map();
+    for (const r of distinctTotals) dtMap.set(svDateKey(r.day), { leads: r.leads, cost: r.total_cost });
+
+    for (const [dayKey, node] of dayMap.entries()) {
+      const distinct = dtMap.get(dayKey);
+      if (distinct) {
+        node.leads = distinct.leads;
+        node.cost  = distinct.cost;
+      } else {
+        // fallback – som van alle children
+        let leads = 0, cost = 0;
+        for (const l2 of node.children.values()) {
+          leads += Number(l2.leads || 0);
+          cost  += toMoneyNumber(l2.cost || 0);
+        }
+        node.leads = leads;
+        node.cost  = cost;
       }
-      dayNode.leads = totals.leads;
-      dayNode.cost  = totals.cost;
     }
 
-    // 5) Map → arrays + sort
+    // 4) Map → arrays + sort
     const toArray = (map, level) => {
       const arr = Array.from(map.values()).map(n => {
-        const out = {
-          key: n.key,
-          label: n.label,
-          leads: n.leads || 0,
-          cost: n.cost || 0,
-        };
+        const out = { key: n.key, label: n.label, leads: n.leads || 0, cost: n.cost || 0 };
         if (n.campaign_id != null) out.campaign_id = n.campaign_id;
-        if (n.children && n.children.size) out.children = toArray(n.children, level === 'day' ? 'affiliate' : 'offer');
+        if (n.children && n.children.size) {
+          const nextLevel = (level === 'day') ? 'affiliate' : 'offer';
+          out.children = toArray(n.children, nextLevel);
+        }
         return out;
       });
-      return arr.sort(sortTopByLevel(level));
+      return arr.sort(sortTop(level));
     };
 
     const tree = toArray(dayMap, 'day');
 
-    return res.status(200).json({ data: { order: ['day','affiliate','offer'], tree } });
+    return res.status(200).json({
+      data: {
+        order: ['day', 'affiliate', 'offer'],
+        applied_filters: {
+          from: cr.from, to: cr.to,
+          affiliate_id: affiliate_id || null,
+          offer_id: offer_id || null,
+          campaign_id: campaign_id || null
+        },
+        tree
+      }
+    });
   } catch (e) {
     console.error('[dashboard-aggregate] error:', e);
     return res.status(500).json({ error: String(e?.message || e) });
