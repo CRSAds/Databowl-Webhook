@@ -27,9 +27,13 @@ function clampRange(date_from, date_to) {
   };
 }
 
+// YYYY-MM-DD (Europe/Amsterdam)
 function dateKeyNL(value) {
   const d = new Date(value);
-  return new Intl.DateTimeFormat('sv-SE', { timeZone:'Europe/Amsterdam', year:'numeric', month:'2-digit', day:'2-digit' }).format(d);
+  return new Intl.DateTimeFormat('sv-SE', {
+    timeZone: 'Europe/Amsterdam',
+    year: 'numeric', month: '2-digit', day: '2-digit'
+  }).format(d);
 }
 function labelForDay(key) {
   const [y,m,d] = (key||'').split('-').map(Number);
@@ -60,6 +64,7 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
 
+  // korte cache
   res.setHeader('Cache-Control', 's-maxage=120, stale-while-revalidate=300');
 
   try {
@@ -72,22 +77,39 @@ export default async function handler(req, res) {
     if (cr.error) return res.status(400).json({ error: cr.error });
     const { date_from, date_to } = cr;
 
-    // PostgREST query: we lezen uit de geaggregeerde tabel/view lead_uniques_day_grp
+    // NB: pas hier de VIEW/TABLE naam aan indien je een andere hebt gemaakt.
+    // Verwacht schema: day (date), campaign_id, affiliate_id, offer_id,
+    // en een kolom met unieke leads + één met totale cost.
+    const tableName = 'lead_uniques_day_grp';
+
+    // Bouw PostgREST query zonder lege and=()
     const p = new URLSearchParams();
-    p.append('select', 'day,campaign_id,affiliate_id,offer_id,leads,total_cost');
+    // We vragen alle velden op en mappen dadelijk de juiste kolomnamen dynamisch.
+    p.append('select', 'day,campaign_id,affiliate_id,offer_id,*');
     p.append('day', `gte.${date_from}`);
     p.append('day', `lte.${date_to}`);
+    // wereldwijde READ-exclude
     p.append('campaign_id', `neq.${EXCLUDED_CAMPAIGN}`);
-    if (offer_id)     p.append('offer_id', `eq.${offer_id}`);
-    if (campaign_id)  p.append('campaign_id', `eq.${campaign_id}`);
+    if (offer_id)     p.append('offer_id',     `eq.${offer_id}`);
+    if (campaign_id)  p.append('campaign_id',  `eq.${campaign_id}`);
     if (affiliate_id) p.append('affiliate_id', `eq.${affiliate_id}`);
-    if (sub_id)       p.append('sub_id', `eq.${sub_id}`);
+    if (sub_id)       p.append('sub_id',       `eq.${sub_id}`); // alleen als kolom bestaat
     p.append('order', 'day.desc,affiliate_id.asc,offer_id.asc');
 
-    const rows = await supaGet('lead_uniques_day_grp', p.toString());
-    // rows: [{day, campaign_id, affiliate_id, offer_id, leads, total_cost}]
+    const rows = await supaGet(tableName, p.toString());
+    // Mogelijke kolomnamen (afhankelijk van je SQL): leads | lead_count | unique_leads
+    // en total_cost | cost_sum | sum_cost
+    const pickCol = (obj, candidates) => candidates.find(c => c in obj);
+    const leadKey = rows.length ? pickCol(rows[0], ['leads','lead_count','unique_leads']) : 'leads';
+    const costKey = rows.length ? pickCol(rows[0], ['total_cost','cost_sum','sum_cost','cost']) : 'total_cost';
 
-    // Build tree day -> affiliate -> offer
+    if (!rows.length) {
+      return res.status(200).json({ data: { order: ['day','affiliate','offer'], tree: [] } });
+    }
+    if (!leadKey) throw new Error(`Supabase ${tableName}: lead count column not found (expected one of leads|lead_count|unique_leads)`);
+    if (!costKey) throw new Error(`Supabase ${tableName}: cost column not found (expected one of total_cost|cost_sum|sum_cost|cost)`);
+
+    // tree: day -> affiliate -> offer
     const dayMap = new Map();
     for (const r of rows) {
       const dayKey = dateKeyNL(r.day);
@@ -110,8 +132,8 @@ export default async function handler(req, res) {
         l2.children.set(offKey, l3);
       }
 
-      const leads = toNumber(r.leads);
-      const cost  = toNumber(r.total_cost);
+      const leads = toNumber(r[leadKey]);
+      const cost  = toNumber(r[costKey]);
 
       l3.leads += leads; l3.cost += cost;
       l2.leads += leads; l2.cost += cost;
