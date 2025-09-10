@@ -1,9 +1,6 @@
-// /api/dashboard-filters.js  (Supabase versie)
-// Unieke waarden voor dropdowns, campagne 925 uitgesloten.
-
+// Filter lists from Supabase (distinct-ish), excluding campaign 925.
 const SUPABASE_URL = (process.env.SUPABASE_URL || '').replace(/\/+$/, '');
-const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE || '';
-
+const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 const EXCLUDED_CAMPAIGN = '925';
 
 function setCors(res) {
@@ -12,31 +9,21 @@ function setCors(res) {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 }
 
-function mustEnv(name, val) {
-  if (!val) throw new Error(`Missing env ${name}`);
-}
-
-async function sbGet(path, params = {}) {
-  mustEnv('SUPABASE_URL', SUPABASE_URL);
-  mustEnv('SUPABASE_SERVICE_ROLE', SUPABASE_SERVICE_ROLE);
-
-  const usp = new URLSearchParams(params);
-  const url = `${SUPABASE_URL}/rest/v1/${path}${usp.toString() ? `?${usp}` : ''}`;
-
-  const r = await fetch(url, {
+async function supaGet(path, qs) {
+  const q = qs ? `?${qs}` : '';
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/${path}${q}`, {
     headers: {
-      apikey: SUPABASE_SERVICE_ROLE,
-      Authorization: `Bearer ${SUPABASE_SERVICE_ROLE}`,
+      apikey: SUPABASE_KEY,
+      Authorization: `Bearer ${SUPABASE_KEY}`,
       'Content-Type': 'application/json',
-      Accept: 'application/json',
       Prefer: 'count=exact',
     },
   });
-  const txt = await r.text();
-  let data = [];
-  try { data = txt ? JSON.parse(txt) : []; } catch {}
-  if (!r.ok) throw new Error(`Supabase ${path} ${r.status}: ${txt}`);
-  return Array.isArray(data) ? data : [];
+  if (!r.ok) {
+    const t = await r.text().catch(()=> '');
+    throw new Error(`Supabase ${path} ${r.status}: ${t || r.statusText}`);
+  }
+  return r.json();
 }
 
 export default async function handler(req, res) {
@@ -45,29 +32,29 @@ export default async function handler(req, res) {
   if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
 
   try {
-    // We pakken unieke kolommen uit de aggregatietabel (lichtgewicht).
-    // PostgREST: distinct doe je met `select=<kolom>&distinct`.
-    const baseFilter = { 'campaign_id=neq': EXCLUDED_CAMPAIGN };
+    if (!SUPABASE_URL || !SUPABASE_KEY) {
+      return res.status(500).json({ error: 'Missing SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY' });
+    }
 
-    const [offers, campaigns, affiliates, subs] = await Promise.all([
-      sbGet('lead_uniques_day_grp', { ...baseFilter, select: 'offer_id', distinct: 'on' }),
-      sbGet('lead_uniques_day_grp', { ...baseFilter, select: 'campaign_id', distinct: 'on' }),
-      sbGet('lead_uniques_day_grp', { ...baseFilter, select: 'affiliate_id', distinct: 'on' }),
-      sbGet('lead_uniques_day_grp', { ...baseFilter, select: 'sub_id', distinct: 'on' }), // alleen als kolom bestaat
-    ]);
+    // haal een recente slice op; voor filters is dat genoeg
+    const p = new URLSearchParams();
+    p.append('select', 'offer_id,campaign_id,affiliate_id,sub_id'); // sub_id alleen als in view
+    p.append('campaign_id', `neq.${EXCLUDED_CAMPAIGN}`);
+    p.append('limit', '20000');
 
-    const clean = (arr, k) => Array.from(new Set(arr.map(x => x?.[k]).filter(Boolean))).sort();
+    const rows = await supaGet('lead_uniques_day_grp', p.toString());
+    const uniq = (arr) => Array.from(new Set(arr.filter(v => v !== null && v !== undefined && v !== ''))).sort((a,b)=>(''+a).localeCompare(''+b,'nl',{numeric:true}));
 
-    const result = {
-      offer_ids: clean(offers, 'offer_id'),
-      campaign_ids: clean(campaigns, 'campaign_id'),
-      affiliate_ids: clean(affiliates, 'affiliate_id'),
-      sub_ids: clean(subs, 'sub_id'),
+    const data = {
+      offer_ids:     uniq(rows.map(r => r.offer_id)),
+      campaign_ids:  uniq(rows.map(r => r.campaign_id)),
+      affiliate_ids: uniq(rows.map(r => r.affiliate_id)),
+      sub_ids:       uniq(rows.map(r => r.sub_id)),
     };
 
-    return res.status(200).json({ data: result });
+    return res.status(200).json({ data });
   } catch (e) {
-    console.error('[dashboard-filters] error:', e);
+    console.error('[dashboard-filters] error', e);
     return res.status(500).json({ error: String(e?.message || e) });
   }
 }
