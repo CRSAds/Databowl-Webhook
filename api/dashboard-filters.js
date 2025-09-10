@@ -37,26 +37,27 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: 'Missing SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY' });
     }
 
-    // We halen unieke waarden uit de geaggregeerde tabel/view (sneller dan raw),
-    // en sluiten campaign 925 uit.
+    // Voor filters is het voldoende om uit de geaggregeerde tabel te lezen.
+    // Pas de naam aan als je een andere gebruikt.
+    const tableName = 'lead_uniques_day_grp';
+
+    // Haal alleen de kolommen op die we nodig hebben, met globale exclude 925.
     const p = new URLSearchParams();
     p.append('select', 'offer_id,campaign_id,affiliate_id,sub_id');
     p.append('campaign_id', `neq.${EXCLUDED_CAMPAIGN}`);
-    p.append('order', 'offer_id.asc,campaign_id.asc,affiliate_id.asc,sub_id.asc');
-    p.append('limit', '100000');
+    p.append('limit', '200000'); // veilig hoog, dedupen we client-side
 
-    const rows = await supaGet('lead_uniques_day_grp', p.toString());
+    const rows = await supaGet(tableName, p.toString());
+    const uniq = (arr) => Array.from(new Set(arr.filter(v => v !== null && v !== undefined && v !== ''))).sort((a,b)=>(''+a).localeCompare(''+b,'nl',{numeric:true}));
 
-    const uniq = (arr) => Array.from(new Set(arr.filter(v => v !== null && v !== undefined && v !== ''))).sort((a,b)=>(`${a}`).localeCompare(`${b}`,'nl',{numeric:true}));
-
-    const result = {
+    const data = {
       offer_ids:     uniq(rows.map(r => r.offer_id)),
       campaign_ids:  uniq(rows.map(r => r.campaign_id)),
       affiliate_ids: uniq(rows.map(r => r.affiliate_id)),
       sub_ids:       uniq(rows.map(r => r.sub_id)),
     };
 
-    return res.status(200).json({ data: result });
+    return res.status(200).json({ data });
   } catch (e) {
     console.error('[dashboard-filters] error:', e);
     return res.status(500).json({ error: String(e?.message || e) });
