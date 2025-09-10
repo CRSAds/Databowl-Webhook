@@ -1,4 +1,10 @@
-// --- REPLACE THE WHOLE FILE WITH THIS FINAL VERSION ---
+// --- COMPLETE FILE ---
+// Aggregatie vanuit Supabase tabel `lead_uniques_day_grp`.
+// - Range guard: max 3 dagen
+// - Campagne 925 wordt altijd uitgefilterd
+// - Werkt met 2 varianten van de tabel:
+//   (A) al geaggregeerd:  day, campaign_id, affiliate_id, offer_id, leads, total_cost
+//   (B) niet-geaggregeerd: day, campaign_id, affiliate_id, offer_id, t_id, cost  (we aggregeren in Node)
 
 const SUPABASE_URL = (process.env.SUPABASE_URL || '').replace(/\/+$/, '');
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
@@ -27,7 +33,6 @@ function clampRange(date_from, date_to) {
   };
 }
 
-// YYYY-MM-DD (Europe/Amsterdam)
 function dateKeyNL(value) {
   const d = new Date(value);
   return new Intl.DateTimeFormat('sv-SE', {
@@ -40,7 +45,7 @@ function labelForDay(key) {
   if (!y||!m||!d) return key||'—';
   return new Date(Date.UTC(y,m-1,d)).toLocaleDateString('nl-NL');
 }
-function toNumber(v){ const n = Number(v); return Number.isFinite(n) ? n : 0; }
+const toNumber = (v) => Number.isFinite(Number(v)) ? Number(v) : 0;
 
 async function supaGet(path, qs) {
   const q = qs ? `?${qs}` : '';
@@ -49,8 +54,8 @@ async function supaGet(path, qs) {
       apikey: SUPABASE_KEY,
       Authorization: `Bearer ${SUPABASE_KEY}`,
       'Content-Type': 'application/json',
-      Prefer: 'count=exact',
-    },
+      Prefer: 'count=exact'
+    }
   });
   if (!r.ok) {
     const txt = await r.text().catch(()=> '');
@@ -63,8 +68,6 @@ export default async function handler(req, res) {
   setCors(res);
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
-
-  // korte cache
   res.setHeader('Cache-Control', 's-maxage=120, stale-while-revalidate=300');
 
   try {
@@ -73,54 +76,36 @@ export default async function handler(req, res) {
     }
 
     const { offer_id, campaign_id, affiliate_id, sub_id, order='day,affiliate,offer' } = req.query;
+
     const cr = clampRange(req.query.date_from, req.query.date_to);
     if (cr.error) return res.status(400).json({ error: cr.error });
     const { date_from, date_to } = cr;
 
-    // NB: pas hier de VIEW/TABLE naam aan indien je een andere hebt gemaakt.
-    // Verwacht schema: day (date), campaign_id, affiliate_id, offer_id,
-    // en een kolom met unieke leads + één met totale cost.
-    const tableName = 'lead_uniques_day_grp';
-
-    // Bouw PostgREST query zonder lege and=()
+    // We vragen alle kolommen op die we kunnen nodig hebben; PostgREST geeft enkel bestaande kolommen terug.
     const p = new URLSearchParams();
-    // We vragen alle velden op en mappen dadelijk de juiste kolomnamen dynamisch.
-    p.append('select', 'day,campaign_id,affiliate_id,offer_id,*');
+    p.append('select', 'day,campaign_id,affiliate_id,offer_id,leads,total_cost,t_id,cost');
     p.append('day', `gte.${date_from}`);
     p.append('day', `lte.${date_to}`);
-    // wereldwijde READ-exclude
     p.append('campaign_id', `neq.${EXCLUDED_CAMPAIGN}`);
-    if (offer_id)     p.append('offer_id',     `eq.${offer_id}`);
-    if (campaign_id)  p.append('campaign_id',  `eq.${campaign_id}`);
+    if (offer_id)     p.append('offer_id', `eq.${offer_id}`);
+    if (campaign_id)  p.append('campaign_id', `eq.${campaign_id}`);
     if (affiliate_id) p.append('affiliate_id', `eq.${affiliate_id}`);
-    if (sub_id)       p.append('sub_id',       `eq.${sub_id}`); // alleen als kolom bestaat
+    if (sub_id)       p.append('sub_id', `eq.${sub_id}`); // alleen als kolom bestaat
     p.append('order', 'day.desc,affiliate_id.asc,offer_id.asc');
 
-    const rows = await supaGet(tableName, p.toString());
-    // Mogelijke kolomnamen (afhankelijk van je SQL): leads | lead_count | unique_leads
-    // en total_cost | cost_sum | sum_cost
-    const pickCol = (obj, candidates) => candidates.find(c => c in obj);
-    const leadKey = rows.length ? pickCol(rows[0], ['leads','lead_count','unique_leads']) : 'leads';
-    const costKey = rows.length ? pickCol(rows[0], ['total_cost','cost_sum','sum_cost','cost']) : 'total_cost';
+    const rows = await supaGet('lead_uniques_day_grp', p.toString());
+    // rows kunnen 2 smaken zijn (zie header).
 
-    if (!rows.length) {
-      return res.status(200).json({ data: { order: ['day','affiliate','offer'], tree: [] } });
-    }
-    if (!leadKey) throw new Error(`Supabase ${tableName}: lead count column not found (expected one of leads|lead_count|unique_leads)`);
-    if (!costKey) throw new Error(`Supabase ${tableName}: cost column not found (expected one of total_cost|cost_sum|sum_cost|cost)`);
+    // === Boom opbouwen: day -> affiliate -> offer
+    const dayMap = new Map(); // dayKey -> { children: Map(affKey -> { children: Map(offKey -> node) }) }
 
-    // tree: day -> affiliate -> offer
-    const dayMap = new Map();
-    for (const r of rows) {
-      const dayKey = dateKeyNL(r.day);
+    // Helper om nodes te pakken/aan te maken
+    function ensureNodes(dayKey, campaignId, affKey, offKey) {
       let dayNode = dayMap.get(dayKey);
       if (!dayNode) {
         dayNode = { key: dayKey, label: labelForDay(dayKey), leads: 0, cost: 0, children: new Map() };
         dayMap.set(dayKey, dayNode);
       }
-      const affKey = (r.affiliate_id ?? '') + '';
-      const offKey = (r.offer_id ?? '') + '';
-
       let l2 = dayNode.children.get(affKey);
       if (!l2) {
         l2 = { key: affKey, label: affKey || '—', leads: 0, cost: 0, children: new Map() };
@@ -128,28 +113,72 @@ export default async function handler(req, res) {
       }
       let l3 = l2.children.get(offKey);
       if (!l3) {
-        l3 = { key: offKey, label: offKey || '—', leads: 0, cost: 0, campaign_id: r.campaign_id ?? null };
+        l3 = { key: offKey, label: offKey || '—', leads: 0, cost: 0, campaign_id: campaignId ?? null, __set: new Set() };
         l2.children.set(offKey, l3);
       }
-
-      const leads = toNumber(r[leadKey]);
-      const cost  = toNumber(r[costKey]);
-
-      l3.leads += leads; l3.cost += cost;
-      l2.leads += leads; l2.cost += cost;
-      dayNode.leads += leads; dayNode.cost += cost;
+      return { dayNode, l2, l3 };
     }
 
+    // Detecteren of we geaggregeerde kolommen hebben
+    const hasAggCols = rows.length && (rows[0].leads !== undefined || rows[0].total_cost !== undefined);
+
+    if (hasAggCols) {
+      // Gebruik aggregaties direct
+      for (const r of rows) {
+        const dayKey = dateKeyNL(r.day);
+        const affKey = (r.affiliate_id ?? '') + '';
+        const offKey = (r.offer_id ?? '') + '';
+        const { dayNode, l2, l3 } = ensureNodes(dayKey, r.campaign_id, affKey, offKey);
+
+        const leads = toNumber(r.leads);
+        const cost  = toNumber(r.total_cost);
+
+        l3.leads += leads; l3.cost += cost;
+        l2.leads += leads; l2.cost += cost;
+        dayNode.leads += leads; dayNode.cost += cost;
+      }
+    } else {
+      // Niet geaggregeerd → zelf distinct t_id tellen + cost sommeren
+      for (const r of rows) {
+        const dayKey = dateKeyNL(r.day);
+        const affKey = (r.affiliate_id ?? '') + '';
+        const offKey = (r.offer_id ?? '') + '';
+        const { dayNode, l2, l3 } = ensureNodes(dayKey, r.campaign_id, affKey, offKey);
+
+        const tId = (r.t_id ?? '') + '';
+        const cost = toNumber(r.cost);
+
+        // distinct t_id
+        if (tId && !l3.__set.has(tId)) {
+          l3.__set.add(tId);
+          l3.leads += 1;
+          l2.leads += 1;
+          dayNode.leads += 1;
+        }
+        l3.cost += cost; l2.cost += cost; dayNode.cost += cost;
+      }
+
+      // opruimen helper set
+      for (const d of dayMap.values()) {
+        for (const a of d.children.values()) {
+          for (const o of a.children.values()) delete o.__set;
+        }
+      }
+    }
+
+    // Naar arrays + sorteringen
     const sortTop = (level) => (a,b)=>{
       if (level==='day') return a.key < b.key ? 1 : -1;
       return (''+a.key).localeCompare(''+b.key, 'nl', { numeric:true });
     };
     const toArray = (map, level) => {
       const arr = Array.from(map.values()).map(n=>{
-        const o = { key:n.key, label:n.label, leads:n.leads||0, cost:n.cost||0 };
-        if (n.campaign_id != null) o.campaign_id = n.campaign_id;
-        if (n.children && n.children.size) o.children = toArray(n.children, level==='day'?'affiliate':'offer');
-        return o;
+        const out = { key:n.key, label:n.label, leads:n.leads||0, cost:n.cost||0 };
+        if (n.campaign_id != null) out.campaign_id = n.campaign_id;
+        if (n.children && n.children.size) {
+          out.children = toArray(n.children, level==='day' ? 'affiliate' : 'offer');
+        }
+        return out;
       });
       return arr.sort(sortTop(level));
     };
