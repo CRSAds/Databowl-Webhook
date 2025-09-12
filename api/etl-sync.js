@@ -81,23 +81,43 @@ async function fetchDirectusPage({ lastCreatedAt, page = 1, since }) {
   return Array.isArray(body.data) ? body.data : [];
 }
 
+// staging upsert
 async function upsertStaging(rows) {
   if (!rows.length) return;
-  const payload = rows.map((r) => ({
-    event_key: r.event_key || null,
-    lead_id: r.lead_id || null,
-    status: r.status || null,
-    revenue: parseMoney(r.revenue),
-    cost: parseMoney(r.cost),
-    currency: r.currency || null,
-    offer_id: r.offer_id || null,
-    campaign_id: r.campaign_id || null,
-    affiliate_id: r.affiliate_id || null,
-    sub_id: r.sub_id || null,
-    t_id: r.t_id || null,
-    created_at: r.created_at ? toISO(r.created_at) : new Date().toISOString(),
-    raw: r.raw || null,
-  }));
+
+  const payload = rows.map((r) => {
+    // primair uit r.revenue / r.cost, fallback op mogelijke varianten in raw
+    const rev =
+      parseMoney(r.revenue) ??
+      parseMoney(r.normalRevenue) ??
+      parseMoney(r.raw?.original?.normalRevenue) ??
+      parseMoney(r.raw?.normalRevenue) ??
+      parseMoney(r.raw?.revenue);
+
+    const cst =
+      parseMoney(r.cost) ??
+      parseMoney(r.normalCost) ??
+      parseMoney(r.raw?.original?.normalCost) ??
+      parseMoney(r.raw?.normalCost) ??
+      parseMoney(r.raw?.cost);
+
+    return {
+      event_key:   r.event_key || null,
+      lead_id:     r.lead_id || null,
+      status:      r.status || null,
+      revenue:     rev,
+      cost:        cst,
+      currency:    r.currency || null,
+      offer_id:    r.offer_id || null,
+      campaign_id: r.campaign_id || null,
+      affiliate_id:r.affiliate_id || null,
+      sub_id:      r.sub_id || null,
+      t_id:        r.t_id || null,
+      created_at:  r.created_at ? new Date(r.created_at).toISOString() : new Date().toISOString(),
+      raw:         r.raw || null,
+    };
+  });
+
   const { error } = await sb.from('events_staging').upsert(payload, { onConflict: 'event_key' });
   if (error) throw error;
 }
