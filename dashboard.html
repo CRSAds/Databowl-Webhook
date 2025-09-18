@@ -5,7 +5,6 @@
   <title>Lead Dashboard</title>
   <link rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/jquery.dataTables.min.css" />
   <style>
-    :root { color-scheme: light dark; }
     body { font-family: Arial, sans-serif; padding: 20px; }
     h1 { margin-bottom: 12px; }
 
@@ -14,18 +13,7 @@
     .filters select, .filters input[type="date"] { padding: 6px 8px; min-width: 150px; }
     button#apply { height: 36px; padding: 0 14px; cursor: pointer; }
 
-    .table-wrap { position: relative; }
     .statusbar { text-align: right; font-size: 12px; margin: 6px 0 8px; opacity:.8; }
-
-    .loader {
-      position:absolute; inset:0; display:none; align-items:center; justify-content:center;
-      background: rgba(255,255,255,.7); backdrop-filter:saturate(150%) blur(2px); z-index: 2;
-      font-weight:600;
-    }
-    .loader.show { display:flex; }
-
-    table { width:100%; }
-    #leadsTable td, #leadsTable th { border-top: 1px solid #e8edf3; }
     .totals { margin-top: 10px; font-weight: 600; }
 
     .level1 td { background: #f6f9ff; }
@@ -35,32 +23,18 @@
 
     .control { cursor: pointer; font-weight: 600; white-space: nowrap; }
     .arrow { display:inline-block; width:1em; text-align:center; margin-right:4px; }
-
-    .empty { padding: 16px; font-style: italic; opacity:.8; }
   </style>
 </head>
 <body>
   <h1>Lead Dashboard</h1>
 
   <div class="filters">
-    <label>Offer ID
-      <select id="offerFilter"><option value="">Alle</option></select>
-    </label>
-    <label>Campaign ID
-      <select id="campaignFilter"><option value="">Alle</option></select>
-    </label>
-    <label>Affiliate ID
-      <select id="affiliateFilter"><option value="">Alle</option></select>
-    </label>
-    <label>Sub ID
-      <select id="subFilter"><option value="">Alle</option></select>
-    </label>
-    <label>Vanaf
-      <input type="date" id="fromDate" />
-    </label>
-    <label>Tot
-      <input type="date" id="toDate" />
-    </label>
+    <label>Offer ID <select id="offerFilter"><option value="">Alle</option></select></label>
+    <label>Campaign ID <select id="campaignFilter"><option value="">Alle</option></select></label>
+    <label>Affiliate ID <select id="affiliateFilter"><option value="">Alle</option></select></label>
+    <label>Sub ID <select id="subFilter"><option value="">Alle</option></select></label>
+    <label>Vanaf <input type="date" id="fromDate" /></label>
+    <label>Tot <input type="date" id="toDate" /></label>
     <label>Groepering
       <select id="groupOrder">
         <option value="day,affiliate,offer" selected>Dag → Affiliate → Offer</option>
@@ -71,49 +45,23 @@
     <button id="apply">Toepassen</button>
   </div>
 
-  <div class="table-wrap">
-    <div id="loader" class="loader">Bezig met laden…</div>
-    <div class="statusbar" id="statusbar"></div>
-    <table id="leadsTable" class="display"></table>
-    <div id="emptyState" class="empty" style="display:none;">Geen data gevonden voor de gekozen filters.</div>
-  </div>
-
+  <div class="statusbar" id="statusbar"></div>
+  <table id="leadsTable" class="display"></table>
   <div class="totals" id="totals"></div>
 
   <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
   <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
   <script>
     const BASE = '';
-
-    let cachedOrder = ['day','affiliate','offer'];
     let l1Map = new Map();
-    let l2MapPerL1 = new Map();
     const openL1 = new Set();
-    const openL2 = new Map();
-    const applyBtn = document.getElementById('apply');
 
     const toMoney = (n) => Number(n || 0).toFixed(2);
-    const showLoader = (on) => document.getElementById('loader').classList.toggle('show', !!on);
     const setStatus = (txt) => document.getElementById('statusbar').textContent = txt || '';
-
-    async function fetchFilters() {
-      const r = await fetch(`${BASE}/api/dashboard-filters`);
-      if (!r.ok) throw new Error('Kon filters niet laden');
-      const { data } = await r.json();
-      const fill = (id, values) => {
-        const sel = document.getElementById(id);
-        values.forEach(v => { const o = document.createElement('option'); o.value=v; o.textContent=v; sel.appendChild(o); });
-      };
-      fill('offerFilter', data.offer_ids);
-      fill('campaignFilter', data.campaign_ids);
-      fill('affiliateFilter', data.affiliate_ids);
-      fill('subFilter', data.sub_ids);
-    }
 
     async function fetchTree() {
       const params = new URLSearchParams();
       const v = (id) => document.getElementById(id).value;
-
       if (v('offerFilter'))     params.append('offer_id', v('offerFilter'));
       if (v('campaignFilter'))  params.append('campaign_id', v('campaignFilter'));
       if (v('affiliateFilter')) params.append('affiliate_id', v('affiliateFilter'));
@@ -121,80 +69,48 @@
       if (v('fromDate'))        params.append('date_from', v('fromDate'));
       if (v('toDate'))          params.append('date_to', v('toDate'));
       params.append('order', v('groupOrder') || 'day,affiliate,offer');
-
       const r = await fetch(`${BASE}/api/dashboard-aggregate?` + params.toString());
-      if (!r.ok) {
-        const msg = await r.text().catch(()=>null);
-        let human = 'Kon data niet laden';
-        try { const j = JSON.parse(msg); if (j?.error) human = j.error; } catch {}
-        throw new Error(human);
-      }
       const { data } = await r.json();
       return data;
     }
 
     function indexMaps(tree) {
       l1Map.clear();
-      l2MapPerL1.clear();
       for (const n1 of tree) {
-        const k1 = n1.key ?? n1.label;
-        l1Map.set(k1, n1);
-        const map = new Map();
-        for (const n2 of (n1.children || [])) {
-          const k2 = n2.key ?? n2.label;
-          map.set(k2, n2);
-        }
-        l2MapPerL1.set(k1, map);
+        l1Map.set(n1.key, n1);
       }
-    }
-
-    function renderTotals(topRows) {
-      const totalLeads = topRows.reduce((s, r) => s + Number(r.leads || 0), 0);
-      const totalCost  = topRows.reduce((s, r) => s + Number(r.cost  || 0), 0);
-      document.getElementById('totals').textContent =
-        `Totaal: ${totalLeads.toLocaleString('nl-NL')} leads • Kosten € ${toMoney(totalCost)}`;
     }
 
     function toTopRows(tree) {
       return tree.map(n=>({
-        key: n.key ?? n.label,
-        level: 1,
-        day: n.label, affiliate:'', offer:'',
-        leads: n.leads, cost: n.cost,
-        children: n.children || []
+        key: n.key, day: n.label, affiliate:'', offer:'',
+        leads: n.leads, cost: n.cost, children: n.children||[]
       }));
     }
 
-    function makeTd(text, cls='') { const td = document.createElement('td'); if (cls) td.className = cls; td.textContent = text ?? ''; return td; }
-    function makeTdHTML(html, cls='') { const td = document.createElement('td'); if (cls) td.className = cls; td.innerHTML = html; return td; }
+    function makeTd(text, cls='') {
+      const td = document.createElement('td');
+      if (cls) td.className = cls;
+      td.textContent = text ?? '';
+      return td;
+    }
+    function makeTdHTML(html, cls='') {
+      const td = document.createElement('td');
+      if (cls) td.className = cls;
+      td.innerHTML = html;
+      return td;
+    }
 
-    function expandLevel1(tr, node, table) {
-      const k1 = node.key ?? node.label;
-      const children = (node.children || []);
-
-      children.forEach(c=>{
-        const k2 = c.key ?? c.label;
+    function expandLevel1(tr, node) {
+      node.children.forEach(c=>{
         const rowEl = document.createElement('tr');
         rowEl.className = 'level2';
         rowEl.appendChild(makeTd(''));
-        const arrow = (c.children && c.children.length) ? '<span class="arrow">▶</span>' : '<span class="arrow"></span>';
-        rowEl.appendChild(makeTdHTML(`${arrow}${c.label}`, 'control'));
+        rowEl.appendChild(makeTdHTML(`${c.children?.length ? '<span class="arrow">▶</span>' : ''}${c.label}`, 'control'));
         rowEl.appendChild(makeTd(''));
         rowEl.appendChild(makeTd(String(c.leads)));
         rowEl.appendChild(makeTd(toMoney(c.cost)));
-
-        rowEl.dataset.l1 = k1;
-        rowEl.dataset.l2 = k2;
-        rowEl.dataset.hasChildren = (c.children && c.children.length) ? '1' : '0';
-
         $(rowEl).insertAfter(tr);
-
-        $(rowEl).off('click').on('click', 'td.control', function (e) {
-          e.stopPropagation();
-          const thisTr = $(this).closest('tr');
-          const hasKids = thisTr.get(0).dataset.hasChildren === '1';
-          if (!hasKids) return;
-        });
       });
     }
 
@@ -208,31 +124,19 @@
     }
 
     async function loadDataAndRender() {
-      showLoader(true); setStatus('Data ophalen…'); applyBtn.disabled = true;
       try {
         const { order, tree } = await fetchTree();
-        cachedOrder = order;
         indexMaps(tree);
-
         const topRows = toTopRows(tree);
-        document.getElementById('emptyState').style.display = topRows.length ? 'none' : 'block';
-        renderTotals(topRows);
 
-        const [L1,L2,L3] = order;
         const columns = [
-          { title: (L1==='day'?'Datum':(L1==='affiliate'?'Affiliate ID':'Offer ID')),
-            data:'day',
-            className:'control',
+          { title:'Datum', data:'day', className:'control',
             render:(data,type,row)=>{
-              const has = row.children && row.children.length;
-              const txt = row.day || '';
-              return has ? `<span class="arrow">▶</span>${txt}` : txt;
+              return row.children?.length ? `<span class="arrow">▶</span>${row.day}` : row.day;
             }
           },
-          { title: (L2==='day'?'Datum':(L2==='affiliate'?'Affiliate ID':'Offer ID')),
-            data:'affiliate', render:(d)=>d||'' },
-          { title: (L3==='day'?'Datum':(L3==='affiliate'?'Affiliate ID':'Offer ID')),
-            data:'offer', render:(d)=>d||'' },
+          { title:'Affiliate ID', data:'affiliate' },
+          { title:'Offer ID', data:'offer' },
           { title:'Aantal Leads', data:'leads' },
           { title:'Kosten', data:'cost', render:d=>toMoney(d) }
         ];
@@ -242,41 +146,55 @@
           dt = $('#leadsTable').DataTable();
           dt.clear().rows.add(topRows).draw(false);
         } else {
-          dt = $('#leadsTable').DataTable({
-            data: topRows,
-            columns,
-            order: [[0,'asc']]
-          });
+          dt = $('#leadsTable').DataTable({ data: topRows, columns, order:[[0,'asc']] });
         }
 
         $('#leadsTable tbody tr').addClass('level1');
+
+        // ✅ Click handler die meerdere dagen tegelijk toestaat
         $('#leadsTable tbody').off('click').on('click','td.control',function(){
           const tr = $(this).closest('tr');
           const row = dt.row(tr);
           const data = row.data();
-          const node = l1Map.get(data.key) || {children:[]};
+          const node = l1Map.get(data.key);
 
-          if (!node.children || !node.children.length) return;
+          if (!node?.children?.length) return;
 
           if (tr.hasClass('shown')) {
             collapseLevel1(tr);
             tr.removeClass('shown');
             $(this).find('.arrow').text('▶');
+            openL1.delete(data.key);
           } else {
-            expandLevel1(tr, node, dt);
+            expandLevel1(tr, node);
             tr.addClass('shown');
             $(this).find('.arrow').text('▼');
+            openL1.add(data.key);
           }
+        });
+
+        // ✅ Bij sorteren: alle geopende dagen heropenen
+        dt.off('order.dt').on('order.dt', function(){
+          $('.level2').remove();
+          $('.level1').removeClass('shown').find('.arrow').text('▶');
+          $('#leadsTable tbody tr.level1').each(function(){
+            const tr = $(this);
+            const row = dt.row(tr);
+            const data = row.data();
+            if (openL1.has(data.key)) {
+              const node = l1Map.get(data.key);
+              expandLevel1(tr, node);
+              tr.addClass('shown');
+              tr.find('.arrow').first().text('▼');
+            }
+          });
         });
 
         const now = new Date();
         setStatus('Bijgewerkt: ' + now.toLocaleTimeString('nl-NL'));
       } catch (e) {
         console.error(e);
-        setStatus('');
         alert(e?.message || 'Kon dashboard data niet laden.');
-      } finally {
-        showLoader(false); applyBtn.disabled = false;
       }
     }
 
@@ -291,10 +209,7 @@
       document.getElementById('toDate').value   = toISO(to);
     })();
 
-    (async () => {
-      await fetchFilters();
-      await loadDataAndRender();
-    })();
+    (async () => { await loadDataAndRender(); })();
   </script>
 </body>
 </html>
