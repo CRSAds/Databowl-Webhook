@@ -83,7 +83,7 @@
   <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
   <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
   <script>
-    const BASE = ''; // zelfde origin
+    const BASE = '';
 
     let cachedOrder = ['day','affiliate','offer'];
     let l1Map = new Map();
@@ -110,18 +110,9 @@
       fill('subFilter', data.sub_ids);
     }
 
-    function daysBetween(a,b){ return Math.ceil((b - a)/86400000) + 1; }
-
     async function fetchTree() {
       const params = new URLSearchParams();
       const v = (id) => document.getElementById(id).value;
-
-      const from = v('fromDate'), to = v('toDate');
-      if (from && to) {
-        const df = new Date(from), dt = new Date(to);
-        const d = daysBetween(df, dt);
-        if (d > 3) throw new Error(`Selecteer max 3 dagen (nu ${d}).`);
-      }
 
       if (v('offerFilter'))     params.append('offer_id', v('offerFilter'));
       if (v('campaignFilter'))  params.append('campaign_id', v('campaignFilter'));
@@ -164,20 +155,6 @@
         `Totaal: ${totalLeads.toLocaleString('nl-NL')} leads • Kosten € ${toMoney(totalCost)}`;
     }
 
-    function getHeaderOrder(table) { const order = table ? table.order() : []; return Array.isArray(order) && order.length ? order[0] : [0,'asc']; }
-    function sortNodesByHeader(nodes, table) {
-      const [col, dir] = getHeaderOrder(table);
-      const mult = dir === 'asc' ? 1 : -1;
-      if (col === 3) return nodes.sort((a,b)=> (Number(a.leads||0)-Number(b.leads||0))*mult);
-      if (col === 4) return nodes.sort((a,b)=> (Number(a.cost ||0)-Number(b.cost ||0))*mult);
-      return nodes.sort((a,b)=>{
-        const av=(a.label??'')+'', bv=(b.label??'')+'';
-        const an=Number(av), bn=Number(bv);
-        if (!Number.isNaN(an) && !Number.isNaN(bn)) return (an-bn)*mult;
-        return av.localeCompare(bv,'nl',{numeric:true})*mult;
-      });
-    }
-
     function toTopRows(tree) {
       return tree.map(n=>({
         key: n.key ?? n.label,
@@ -193,7 +170,7 @@
 
     function expandLevel1(tr, node, table) {
       const k1 = node.key ?? node.label;
-      const children = sortNodesByHeader((node.children || []).map(x=>({...x})), table);
+      const children = (node.children || []);
 
       children.forEach(c=>{
         const k2 = c.key ?? c.label;
@@ -212,34 +189,11 @@
 
         $(rowEl).insertAfter(tr);
 
-        if (openL2.get(k1)?.has(k2)) {
-          expandLevel2($(rowEl), c, table);
-          rowEl.classList.add('shown');
-          rowEl.querySelector('.arrow').textContent = '▼';
-        }
-
         $(rowEl).off('click').on('click', 'td.control', function (e) {
           e.stopPropagation();
           const thisTr = $(this).closest('tr');
           const hasKids = thisTr.get(0).dataset.hasChildren === '1';
           if (!hasKids) return;
-
-          const l1 = thisTr.get(0).dataset.l1;
-          const l2 = thisTr.get(0).dataset.l2;
-
-          if (thisTr.hasClass('shown')) {
-            collapseLevel2(thisTr);
-            thisTr.removeClass('shown');
-            $(this).find('.arrow').text('▶');
-            openL2.get(l1)?.delete(l2);
-          } else {
-            const cNode = l2MapPerL1.get(l1)?.get(l2);
-            expandLevel2(thisTr, cNode, table);
-            thisTr.addClass('shown');
-            $(this).find('.arrow').text('▼');
-            if (!openL2.has(l1)) openL2.set(l1, new Set());
-            openL2.get(l1).add(l2);
-          }
         });
       });
     }
@@ -250,29 +204,6 @@
         const tmp = next.next();
         next.remove();
         next = tmp;
-      }
-    }
-
-    function expandLevel2($tr2, childNode, table) {
-      const kids = sortNodesByHeader((childNode.children || []).map(x=>({...x})), table);
-      kids.forEach(k=>{
-        const r3 = document.createElement('tr');
-        r3.className = 'level3';
-        r3.appendChild(makeTd(''));
-        r3.appendChild(makeTd(''));
-        r3.appendChild(makeTd(k.label));
-        r3.appendChild(makeTd(String(k.leads)));
-        r3.appendChild(makeTd(toMoney(k.cost)));
-        $(r3).insertAfter($tr2);
-      });
-    }
-
-    function collapseLevel2($tr2) {
-      let nx = $tr2.next();
-      while (nx.length && nx.hasClass('level3')) {
-        const t2 = nx.next();
-        nx.remove();
-        nx = t2;
       }
     }
 
@@ -309,7 +240,6 @@
         let dt;
         if ($.fn.dataTable.isDataTable('#leadsTable')) {
           dt = $('#leadsTable').DataTable();
-          openL1.clear(); openL2.clear();
           dt.clear().rows.add(topRows).draw(false);
         } else {
           dt = $('#leadsTable').DataTable({
@@ -320,7 +250,6 @@
         }
 
         $('#leadsTable tbody tr').addClass('level1');
-        // ✅ Nieuwe click handler voor dagen
         $('#leadsTable tbody').off('click').on('click','td.control',function(){
           const tr = $(this).closest('tr');
           const row = dt.row(tr);
@@ -333,33 +262,11 @@
             collapseLevel1(tr);
             tr.removeClass('shown');
             $(this).find('.arrow').text('▶');
-            openL1.delete(data.key);
           } else {
             expandLevel1(tr, node, dt);
             tr.addClass('shown');
             $(this).find('.arrow').text('▼');
-            openL1.add(data.key);
           }
-        });
-
-        // ✅ Sorteer-handler heropent ALLE open dagen
-        dt.off('order.dt').on('order.dt', function(){
-          $('.level2, .level3').remove();
-          $('.level1').removeClass('shown').find('.arrow').text('▶');
-
-          $('#leadsTable tbody tr.level1').each(function(){
-            const tr = $(this);
-            const row = dt.row(tr);
-            const data = row.data();
-            if (!openL1.has(data.key)) return;
-
-            const node = l1Map.get(data.key);
-            if (!node) return;
-
-            expandLevel1(tr, node, dt);
-            tr.addClass('shown');
-            tr.find('.arrow').first().text('▼');
-          });
         });
 
         const now = new Date();
@@ -375,11 +282,11 @@
 
     document.getElementById('apply').addEventListener('click', loadDataAndRender);
 
-    // Default: laatste 3 dagen incl. vandaag
+    // Default: deze maand
     (function setDefaultDates(){
       const toISO = (d)=>d.toISOString().slice(0,10);
       const to = new Date();
-      const from = new Date(); from.setDate(to.getDate() - 2);
+      const from = new Date(to.getFullYear(), to.getMonth(), 1);
       document.getElementById('fromDate').value = toISO(from);
       document.getElementById('toDate').value   = toISO(to);
     })();
