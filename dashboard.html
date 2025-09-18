@@ -7,6 +7,11 @@
   <style>
     body { font-family: Arial, sans-serif; padding: 20px; }
     h1 { margin-bottom: 12px; }
+    .filters { margin-bottom: 14px; display:flex; gap:16px; flex-wrap:wrap; align-items:flex-end; }
+    .filters label { display:flex; flex-direction:column; font-size: 12px; gap:6px; }
+    .filters select, .filters input[type="date"] { padding: 6px 8px; min-width: 150px; }
+    button#apply { height: 36px; padding: 0 14px; cursor: pointer; }
+
     table { width: 100%; border-collapse: collapse; }
     td.control { cursor: pointer; font-weight: 600; }
     .arrow { display:inline-block; width:1em; text-align:center; margin-right:4px; }
@@ -19,6 +24,28 @@
 <body>
   <h1>Lead Dashboard</h1>
 
+  <div class="filters">
+    <label>Offer ID
+      <select id="offerFilter"><option value="">Alle</option></select>
+    </label>
+    <label>Campaign ID
+      <select id="campaignFilter"><option value="">Alle</option></select>
+    </label>
+    <label>Affiliate ID
+      <select id="affiliateFilter"><option value="">Alle</option></select>
+    </label>
+    <label>Sub ID
+      <select id="subFilter"><option value="">Alle</option></select>
+    </label>
+    <label>Vanaf
+      <input type="date" id="fromDate" />
+    </label>
+    <label>Tot
+      <input type="date" id="toDate" />
+    </label>
+    <button id="apply">Toepassen</button>
+  </div>
+
   <table id="leadsTable" class="display"></table>
   <div class="totals" id="totals"></div>
 
@@ -27,11 +54,33 @@
   <script>
     const BASE = ''; // zelfde origin
     let l1Map = new Map();
-
     const toMoney = (n) => Number(n || 0).toFixed(2);
 
+    async function fetchFilters() {
+      const r = await fetch(`${BASE}/api/dashboard-filters`);
+      if (!r.ok) return;
+      const { data } = await r.json();
+      const fill = (id, values) => {
+        const sel = document.getElementById(id);
+        values.forEach(v => { const o = document.createElement('option'); o.value=v; o.textContent=v; sel.appendChild(o); });
+      };
+      fill('offerFilter', data.offer_ids);
+      fill('campaignFilter', data.campaign_ids);
+      fill('affiliateFilter', data.affiliate_ids);
+      fill('subFilter', data.sub_ids);
+    }
+
     async function fetchTree() {
-      const r = await fetch(`${BASE}/api/dashboard-aggregate`);
+      const params = new URLSearchParams();
+      const v = (id) => document.getElementById(id).value;
+      if (v('offerFilter'))     params.append('offer_id', v('offerFilter'));
+      if (v('campaignFilter'))  params.append('campaign_id', v('campaignFilter'));
+      if (v('affiliateFilter')) params.append('affiliate_id', v('affiliateFilter'));
+      if (v('subFilter'))       params.append('sub_id', v('subFilter'));
+      if (v('fromDate'))        params.append('date_from', v('fromDate'));
+      if (v('toDate'))          params.append('date_to', v('toDate'));
+
+      const r = await fetch(`${BASE}/api/dashboard-aggregate?` + params.toString());
       const { data } = await r.json();
       return data.tree;
     }
@@ -46,8 +95,8 @@
     function toTopRows(tree) {
       return tree.map(n=>({
         key: n.key,
-        date_nl: n.label,       // zichtbaar
-        date_iso: n.key,        // hidden sort
+        date_nl: n.label,     // zichtbaar
+        date_iso: n.key,      // verborgen sort
         leads: n.leads,
         cost: n.cost,
         children: n.children || []
@@ -61,7 +110,7 @@
         `Totaal: ${totalLeads.toLocaleString('nl-NL')} leads • Kosten € ${toMoney(totalCost)}`;
     }
 
-    async function loadData() {
+    async function loadDataAndRender() {
       const tree = await fetchTree();
       indexMaps(tree);
       const rows = toTopRows(tree);
@@ -79,16 +128,22 @@
         },
         { title:'Aantal Leads', data:'leads' },
         { title:'Kosten', data:'cost', render:d=>toMoney(d) },
-        { title:'Datum sort', data:'date_iso', visible:false } // verborgen ISO datum
+        { title:'Datum sort', data:'date_iso', visible:false } // hidden sort kolom
       ];
 
-      const dt = $('#leadsTable').DataTable({
-        data: rows,
-        columns,
-        order: [[3,'asc']], // sorteer op hidden ISO-datum
-      });
+      let dt;
+      if ($.fn.dataTable.isDataTable('#leadsTable')) {
+        dt = $('#leadsTable').DataTable();
+        dt.clear().rows.add(rows).draw(false);
+      } else {
+        dt = $('#leadsTable').DataTable({
+          data: rows,
+          columns,
+          order: [[3,'asc']], // sorteren op verborgen ISO datum
+        });
+      }
 
-      $('#leadsTable tbody').on('click','td.control',function(){
+      $('#leadsTable tbody').off('click').on('click','td.control',function(){
         const tr = $(this).closest('tr');
         const row = dt.row(tr);
         const data = row.data();
@@ -118,7 +173,21 @@
       });
     }
 
-    loadData();
+    document.getElementById('apply').addEventListener('click', loadDataAndRender);
+
+    // Standaard: hele huidige maand
+    (function setDefaultDates(){
+      const toISO = (d)=>d.toISOString().slice(0,10);
+      const today = new Date();
+      const firstDay = new Date(today.getFullYear(), today.getMonth(), 1);
+      document.getElementById('fromDate').value = toISO(firstDay);
+      document.getElementById('toDate').value   = toISO(today);
+    })();
+
+    (async () => {
+      await fetchFilters();
+      await loadDataAndRender();
+    })();
   </script>
 </body>
 </html>
