@@ -1,4 +1,4 @@
-/* globals window, document, fetch, Intl */
+/* globals window, document, fetch */
 (() => {
   const BASE = 'https://databowl-webhook.vercel.app'; // jouw Vercel base
   const root = document.getElementById('lead-dashboard');
@@ -74,9 +74,9 @@
   root.appendChild(totals);
 
   // ---- state ----
-  const openDays = new Set();             // set van day.key die open staan
+  const openDays = new Set();             // meerdere dagen tegelijk
   const openAffByDay = new Map();         // Map(dayKey -> Set(affiliateKey))
-  let dayRows = [];                       // top-level rows {key,date_nl,date_iso,leads,cost,children[]}
+  let dayRows = [];
 
   // ---- filters ----
   async function fetchFilters() {
@@ -108,7 +108,7 @@
     if (v('ld-from'))      params.append('date_from', v('ld-from'));
     if (v('ld-to'))        params.append('date_to', v('ld-to'));
 
-    const r = await fetch(`${BASE}/api/dashboard-aggregate?${params.toString()}`);
+    const r = await fetch(`${BASE}/api/metrics-aggregate?${params.toString()}`);
     if (!r.ok) {
       const txt = await r.text().catch(()=> '');
       throw new Error(txt || 'Kon dashboard data niet laden');
@@ -118,13 +118,14 @@
   }
 
   // ---- rendering ----
-  function byISO(a,b){ return (a.date_iso < b.date_iso) ? -1 : (a.date_iso > b.date_iso ? 1 : 0); }
+  function byISO(a,b){ 
+    return new Date(a.date_iso) - new Date(b.date_iso); 
+  }
 
   function mapTreeToRows(tree) {
-    // top-level: dag
     return (tree || []).map(n => ({
-      key: n.key,             // "YYYY-MM-DD"
-      date_nl: n.label,       // "18-9-2025"
+      key: n.key,
+      date_nl: n.label,
       date_iso: n.key,
       leads: Number(n.leads || 0),
       cost: Number(n.cost || 0),
@@ -147,12 +148,10 @@
       return;
     }
 
-    // totals (som van top-level per dag, exact zoals backend levert)
     const totalLeads = dayRows.reduce((s,r)=> s + (r.leads||0), 0);
     const totalCost  = dayRows.reduce((s,r)=> s + (r.cost ||0), 0);
     totals.textContent = `Totaal: ${totalLeads.toLocaleString('nl-NL')} leads • Kosten € ${fmtMoney(totalCost)}`;
 
-    // rows
     for (const d of dayRows) {
       const tr = el('tr','level1' + (openDays.has(d.key) ? ' open':''));
       const td1 = el('td','ld-control');
@@ -165,7 +164,6 @@
       tr.dataset.day = d.key;
       tbody.appendChild(tr);
 
-      // render affiliates if open
       if (openDays.has(d.key)) {
         const openAff = openAffByDay.get(d.key) || new Set();
         for (const a of d.children) {
@@ -206,19 +204,13 @@
     if (!td || !td.classList.contains('ld-control')) return;
     const tr = td.parentElement;
 
-    // Level 1 toggle?
     if (tr.classList.contains('level1')) {
       const dayKey = tr.dataset.day;
-      if (openDays.has(dayKey)) {
-        openDays.delete(dayKey);
-      } else {
-        openDays.add(dayKey);
-      }
+      if (openDays.has(dayKey)) openDays.delete(dayKey); else openDays.add(dayKey);
       render();
       return;
     }
 
-    // Level 2 toggle?
     if (tr.classList.contains('level2')) {
       const dayKey = tr.dataset.day;
       const affKey = tr.dataset.aff;
@@ -244,7 +236,6 @@
     }
   }
 
-  // defaults: hele huidige maand
   (function defaults() {
     byId('ld-from').value = firstDayOfThisMonthISO();
     byId('ld-to').value = todayISO();
@@ -252,7 +243,6 @@
 
   byId('ld-apply').addEventListener('click', apply);
 
-  // init
   (async () => {
     await fetchFilters();
     await apply();
