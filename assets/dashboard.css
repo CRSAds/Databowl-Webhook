@@ -1,0 +1,26 @@
+:root { color-scheme: light dark; }
+* { box-sizing: border-box; }
+body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+#lead-dashboard { padding: 20px; }
+
+.ld-toolbar { display:flex; flex-wrap:wrap; gap:16px; align-items:flex-end; margin-bottom:14px; }
+.ld-toolbar label { display:flex; flex-direction:column; font-size:12px; gap:6px; }
+.ld-toolbar select, .ld-toolbar input[type="date"] { padding:6px 8px; min-width:160px; }
+.ld-btn { height:36px; padding:0 14px; cursor:pointer; }
+
+.ld-status { text-align:right; font-size:12px; margin:6px 0 8px; opacity:.8; }
+
+.ld-table-wrap { width:100%; overflow-x:auto; }
+table.ld { width:100%; border-collapse:collapse; }
+.ld th, .ld td { border-top:1px solid #e8edf3; padding:10px 8px; }
+.ld thead th { text-align:left; font-weight:700; }
+.ld .level1 > td { background:#f6f9ff; }
+.ld .level1.open > td { background:#eef3ff; }
+.ld .level2 > td { background:#f7f7f9; }
+.ld .level3 > td { background:#eef6ff; }
+
+.ld-control { cursor:pointer; font-weight:600; white-space:nowrap; }
+.ld-arrow { display:inline-block; width:1em; text-align:center; margin-right:4px; }
+.ld-empty { padding:14px; font-style:italic; opacity:.8; }
+
+.ld-totals { margin-top:10px; font-weight:600; }
