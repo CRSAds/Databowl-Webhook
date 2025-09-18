@@ -1,4 +1,4 @@
-/* globals window, document, fetch */
+/* globals window, document, fetch, Intl */
 (() => {
   const BASE = 'https://databowl-webhook.vercel.app'; // jouw Vercel base
   const root = document.getElementById('lead-dashboard');
@@ -74,8 +74,8 @@
   root.appendChild(totals);
 
   // ---- state ----
-  const openDays = new Set();             // meerdere dagen tegelijk
-  const openAffByDay = new Map();         // Map(dayKey -> Set(affiliateKey))
+  const openDays = new Set();
+  const openAffByDay = new Map();
   let dayRows = [];
 
   // ---- filters ----
@@ -108,7 +108,7 @@
     if (v('ld-from'))      params.append('date_from', v('ld-from'));
     if (v('ld-to'))        params.append('date_to', v('ld-to'));
 
-    const r = await fetch(`${BASE}/api/metrics-aggregate?${params.toString()}`);
+    const r = await fetch(`${BASE}/api/dashboard-aggregate?${params.toString()}`);
     if (!r.ok) {
       const txt = await r.text().catch(()=> '');
       throw new Error(txt || 'Kon dashboard data niet laden');
@@ -118,9 +118,7 @@
   }
 
   // ---- rendering ----
-  function byISO(a,b){ 
-    return new Date(a.date_iso) - new Date(b.date_iso); 
-  }
+  function byISO(a,b){ return a.date_iso.localeCompare(b.date_iso); }
 
   function mapTreeToRows(tree) {
     return (tree || []).map(n => ({
@@ -168,8 +166,7 @@
         const openAff = openAffByDay.get(d.key) || new Set();
         for (const a of d.children) {
           const tr2 = el('tr','level2');
-          const tdA = el('td','', '');
-          tr2.appendChild(tdA);
+          tr2.appendChild(el('td','', ''));
           const tdAff = el('td','ld-control');
           tdAff.innerHTML = (a.children && a.children.length ? `<span class="ld-arrow">${openAff.has(a.key)?'▼':'▶'}</span>${a.label}` : a.label);
           tr2.appendChild(tdAff);
@@ -206,7 +203,8 @@
 
     if (tr.classList.contains('level1')) {
       const dayKey = tr.dataset.day;
-      if (openDays.has(dayKey)) openDays.delete(dayKey); else openDays.add(dayKey);
+      if (openDays.has(dayKey)) openDays.delete(dayKey);
+      else openDays.add(dayKey);
       render();
       return;
     }
@@ -236,6 +234,7 @@
     }
   }
 
+  // defaults
   (function defaults() {
     byId('ld-from').value = firstDayOfThisMonthISO();
     byId('ld-to').value = todayISO();
@@ -243,6 +242,7 @@
 
   byId('ld-apply').addEventListener('click', apply);
 
+  // init
   (async () => {
     await fetchFilters();
     await apply();
