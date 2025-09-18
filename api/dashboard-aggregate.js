@@ -5,7 +5,7 @@
 const SUPABASE_URL = (process.env.SUPABASE_URL || '').replace(/\/+$/, '');
 const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE || '';
 
-const MAX_DAYS = 3;
+const MAX_DAYS = 31;
 const EXCLUDED_CAMPAIGN = '925';
 
 function setCors(res) {
