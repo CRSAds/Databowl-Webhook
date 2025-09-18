@@ -3,7 +3,7 @@
 const SUPABASE_URL = (process.env.SUPABASE_URL || '').replace(/\/+$/, '');
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 const EXCLUDED_CAMPAIGN = '925';
-const MAX_DAYS = 3;
+const MAX_DAYS = 365;
 
 function setCors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
