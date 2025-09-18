@@ -322,26 +322,27 @@
 
         $('#leadsTable tbody tr').addClass('level1');
         $('#leadsTable tbody').off('click').on('click','td.control',function(){
-          const tr = $(this).closest('tr');
-          const row = dt.row(tr);
-          const data = row.data();
-          const node = l1Map.get(data.key) || {children:[]};
+  const tr = $(this).closest('tr');
+  const row = dt.row(tr);
+  const data = row.data();
+  const node = l1Map.get(data.key) || {children:[]};
 
-          if (!node.children || !node.children.length) return;
+  if (!node.children || !node.children.length) return;
 
-          if (tr.hasClass('shown')) {
-            collapseLevel1(tr);
-            tr.removeClass('shown');
-            $(this).find('.arrow').text('▶');
-            openL1.delete(data.key);
-          } else {
-            collapseLevel1(tr);
-            expandLevel1(tr, node, dt);
-            tr.addClass('shown');
-            $(this).find('.arrow').text('▼');
-            openL1.add(data.key);
-          }
-        });
+  if (tr.hasClass('shown')) {
+    // ⬇️ Als dag open is, sluit hem en verwijder uit set
+    collapseLevel1(tr);
+    tr.removeClass('shown');
+    $(this).find('.arrow').text('▶');
+    openL1.delete(data.key);
+  } else {
+    // ⬇️ NIET meer alle andere dagen inklappen
+    expandLevel1(tr, node, dt);
+    tr.addClass('shown');
+    $(this).find('.arrow').text('▼');
+    openL1.add(data.key);
+  }
+});
 
         dt.off('order.dt').on('order.dt', function(){
           $('.level2, .level3').remove();
