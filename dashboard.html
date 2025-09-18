@@ -105,7 +105,7 @@
         values.forEach(v => { const o = document.createElement('option'); o.value=v; o.textContent=v; sel.appendChild(o); });
       };
       fill('offerFilter', data.offer_ids);
-      fill('campaignFilter', data.campaign_ids); // 925 zit hier niet in (READ exclude)
+      fill('campaignFilter', data.campaign_ids);
       fill('affiliateFilter', data.affiliate_ids);
       fill('subFilter', data.sub_ids);
     }
@@ -116,7 +116,6 @@
       const params = new URLSearchParams();
       const v = (id) => document.getElementById(id).value;
 
-      // client-side guard: max 3 dagen
       const from = v('fromDate'), to = v('toDate');
       if (from && to) {
         const df = new Date(from), dt = new Date(to);
@@ -321,29 +320,29 @@
         }
 
         $('#leadsTable tbody tr').addClass('level1');
+        // ✅ Nieuwe click handler voor dagen
         $('#leadsTable tbody').off('click').on('click','td.control',function(){
-  const tr = $(this).closest('tr');
-  const row = dt.row(tr);
-  const data = row.data();
-  const node = l1Map.get(data.key) || {children:[]};
+          const tr = $(this).closest('tr');
+          const row = dt.row(tr);
+          const data = row.data();
+          const node = l1Map.get(data.key) || {children:[]};
 
-  if (!node.children || !node.children.length) return;
+          if (!node.children || !node.children.length) return;
 
-  if (tr.hasClass('shown')) {
-    // ⬇️ Als dag open is, sluit hem en verwijder uit set
-    collapseLevel1(tr);
-    tr.removeClass('shown');
-    $(this).find('.arrow').text('▶');
-    openL1.delete(data.key);
-  } else {
-    // ⬇️ NIET meer alle andere dagen inklappen
-    expandLevel1(tr, node, dt);
-    tr.addClass('shown');
-    $(this).find('.arrow').text('▼');
-    openL1.add(data.key);
-  }
-});
+          if (tr.hasClass('shown')) {
+            collapseLevel1(tr);
+            tr.removeClass('shown');
+            $(this).find('.arrow').text('▶');
+            openL1.delete(data.key);
+          } else {
+            expandLevel1(tr, node, dt);
+            tr.addClass('shown');
+            $(this).find('.arrow').text('▼');
+            openL1.add(data.key);
+          }
+        });
 
+        // ✅ Sorteer-handler heropent ALLE open dagen
         dt.off('order.dt').on('order.dt', function(){
           $('.level2, .level3').remove();
           $('.level1').removeClass('shown').find('.arrow').text('▶');
@@ -380,7 +379,7 @@
     (function setDefaultDates(){
       const toISO = (d)=>d.toISOString().slice(0,10);
       const to = new Date();
-      const from = new Date(); from.setDate(to.getDate() - 2); // 3 dagen incl. vandaag
+      const from = new Date(); from.setDate(to.getDate() - 2);
       document.getElementById('fromDate').value = toISO(from);
       document.getElementById('toDate').value   = toISO(to);
     })();
