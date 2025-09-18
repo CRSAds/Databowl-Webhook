@@ -51,8 +51,8 @@ async function supaGet(path, params) {
   const qs = params ? `?${params}` : '';
   const r = await fetch(`${SUPABASE_URL}/rest/v1/${path}${qs}`, {
     headers: {
-      apikey: SUPABASE_SERVICE_ROLE_KEY,
-      Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+      apikey: SUPABASE_SERVICE_ROLE,
+      Authorization: `Bearer ${SUPABASE_SERVICE_ROLE}`,
       'Content-Type': 'application/json',
       Prefer: 'count=exact',
     },
@@ -71,10 +71,10 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed' });
 
   try {
-    if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+    if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE) {
       return res
         .status(500)
-        .json({ error: 'Missing SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY' });
+        .json({ error: 'Missing SUPABASE_URL / SUPABASE_SERVICE_ROLE' });
     }
 
     const { affiliate_id, offer_id, campaign_id } = req.query;
