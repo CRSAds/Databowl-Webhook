@@ -2,7 +2,7 @@
 // Snelle metrics feed: sommeer per dag -> affiliate -> offer
 
 const SUPABASE_URL = (process.env.SUPABASE_URL || '').replace(/\/+$/, '');
-const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE|| '';
 const EXCLUDED_CAMPAIGN = '925';
 const MAX_DAYS = 365;
 
