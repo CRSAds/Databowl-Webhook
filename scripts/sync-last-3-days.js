@@ -4,12 +4,28 @@ import fetch from "node-fetch";
 // Vaste Vercel URL
 const BASE_URL = "https://databowl-webhook.vercel.app";
 
-// Config
-const START_DATE = "2025-09-15"; // vanaf deze datum ophalen
+// Config defaults
+const DEFAULT_SINCE = "2025-09-15"; // fallback
 const BATCH = 500; // rows per batch
 const PAGES = 10;  // max pages per API-call
 
+// Argument parsing
+function parseArgs() {
+  const args = process.argv.slice(2);
+  const out = {};
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--since" && args[i + 1]) {
+      out.since = args[i + 1];
+      i++;
+    }
+  }
+  return out;
+}
+
 async function run() {
+  const { since } = parseArgs();
+  const START_DATE = since || DEFAULT_SINCE;
+
   let cursor = null;
   let totalSynced = 0;
   let round = 0;
