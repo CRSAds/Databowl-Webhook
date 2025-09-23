@@ -34,9 +34,7 @@ async function getLastSynced(client) {
 }
 
 async function updateLastSynced(client, ts) {
-  const { error } = await client
-    .from("sync_runs")
-    .insert({ last_synced_at: ts });
+  const { error } = await client.from("sync_runs").insert({ last_synced_at: ts });
   if (error) console.error("[sync] updateLastSynced error", error);
 }
 
@@ -72,15 +70,25 @@ async function runEtlSync(since) {
 }
 
 async function refreshSupabaseViews(client) {
-  const { error } = await client.rpc("refresh_materialized_views");
-  if (error) throw new Error(`Failed to refresh views: ${error.message}`);
+  try {
+    const { error } = await client.rpc("refresh_materialized_views");
+    if (error) throw error;
+    console.log("[sync] ✅ Views refreshed");
+  } catch (err) {
+    if (String(err.message).includes("concurrently")) {
+      console.warn("[sync] ⏳ Refresh skipped (already running)");
+    } else {
+      throw err;
+    }
+  }
 }
 
 // handler
 export default async function handler(req, res) {
   setCors(res);
   if (req.method === "OPTIONS") return res.status(200).end();
-  if (req.method !== "GET") return res.status(405).json({ error: "Method not allowed" });
+  if (req.method !== "GET")
+    return res.status(405).json({ error: "Method not allowed" });
 
   try {
     console.log("[sync] Start run…");
