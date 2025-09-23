@@ -1,3 +1,7 @@
+function byISO(a, b) {
+  return a.date_iso.localeCompare(b.date_iso);
+}
+
 function mapTreeToRows(tree) {
   return (tree || []).map(n => ({
     key: `day-${n.key}`,   // uniek prefix voor dag
