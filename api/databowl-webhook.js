@@ -204,6 +204,12 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: 'Missing lead_id in payload' });
     }
 
+    // 🔹 NIEUW: alleen leads met cost opslaan
+    const costNum = event.cost != null ? Number(event.cost) : 0;
+    if (!costNum || costNum <= 0) {
+      return res.status(200).json({ skipped: true, reason: 'no_cost_yet' });
+    }
+
     // Idempotency via unieke kolom event_key (zonder read)
     const event_key = makeKey(event);
     event.event_key = event_key; // <-- vereist veld in Directus, Unique
