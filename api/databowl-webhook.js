@@ -150,7 +150,7 @@ function mapPayload(body) {
 
 // Directus create (met unique event_key afhandeling)
 async function createEvent(event) {
-  const r = await fetch(`${DIRECTUS_URL}/items/Databowl_lead_events`, {
+  const r = await fetch(`${DIRECTUS_URL}/items/lead_omzet`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
