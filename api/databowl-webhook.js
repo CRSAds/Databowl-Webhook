@@ -204,6 +204,9 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: 'Missing lead_id in payload' });
     }
 
+    // 🆕 Add DAY field (YYYY-MM-DD) for Insights
+    event.day = event.created_at.slice(0, 10);
+
     // 🔹 NIEUW: alleen leads met cost opslaan
     const costNum = event.cost != null ? Number(event.cost) : 0;
     if (!costNum || costNum <= 0) {
