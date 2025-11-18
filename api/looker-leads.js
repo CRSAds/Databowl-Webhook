@@ -8,7 +8,7 @@ function toNumber(v) {
 // simpele CSV-encoder
 function toCSV(rows, columns) {
   const escape = (value) => {
-    if (value == null) return '';
+    if (value == null) return "";
     const s = String(value);
     if (/[",\n]/.test(s)) {
       return `"${s.replace(/"/g, '""')}"`;
@@ -16,11 +16,11 @@ function toCSV(rows, columns) {
     return s;
   };
 
-  const header = columns.join(',');
+  const header = columns.join(",");
   const lines = rows.map((row) =>
-    columns.map((col) => escape(row[col])).join(',')
+    columns.map((col) => escape(row[col])).join(",")
   );
-  return [header, ...lines].join('\n');
+  return [header, ...lines].join("\n");
 }
 
 export default async function handler(req, res) {
@@ -29,45 +29,49 @@ export default async function handler(req, res) {
     const DIRECTUS_TOKEN = process.env.DIRECTUS_TOKEN;
 
     if (!DIRECTUS_URL || !DIRECTUS_TOKEN) {
-      res
+      return res
         .status(500)
-        .json({ error: 'Missing DIRECTUS_URL or DIRECTUS_TOKEN env vars' });
-      return;
+        .json({ error: "Missing DIRECTUS_URL or DIRECTUS_TOKEN env vars" });
     }
 
     const { from, to, offer, affiliate, campaign, format } = req.query;
 
-    // -------- 1. Query opbouwen voor Lead_omzet --------
+    // -------------------------------------
+    // 1. Filters opbouwen
+    // -------------------------------------
     const filters = [];
 
-    // optioneel date-range op veld "day"
-    if (from && to) {
-      filters.push(`filter[day][_between]=${from},${to}`);
-    }
-
+    if (from && to) filters.push(`filter[day][_between]=${from},${to}`);
     if (offer) filters.push(`filter[offer_id][_eq]=${offer}`);
     if (affiliate) filters.push(`filter[affiliate_id][_eq]=${affiliate}`);
     if (campaign) filters.push(`filter[campaign_id][_eq]=${campaign}`);
 
-    const qs = filters.length ? `&${filters.join('&')}` : '';
+    const qs = filters.length ? `&${filters.join("&")}` : "";
 
-    // we pakken alleen de velden die we nodig hebben
     const leadUrl = `${DIRECTUS_URL}/items/Lead_omzet?limit=-1&fields=lead_id,status,revenue,cost,currency,offer_id,campaign_id,supplier_id,affiliate_id,sub_id,t_id,created_at,day${qs}`;
 
-    // -------- 2. Data ophalen uit Directus --------
+    // -------------------------------------
+    // 2. Directus API calls (correct fields)
+    // -------------------------------------
     const [leadRes, coRes, ccRes, caRes] = await Promise.all([
       fetch(leadUrl, {
         headers: { Authorization: `Bearer ${DIRECTUS_TOKEN}` },
       }),
+
+      // co_sponsors → cid + title
       fetch(`${DIRECTUS_URL}/items/co_sponsors?limit=-1&fields=cid,title`, {
         headers: { Authorization: `Bearer ${DIRECTUS_TOKEN}` },
       }),
+
+      // coreg_campaigns → cid + Sponsor (MET hoofdletter S)
       fetch(
-        `${DIRECTUS_URL}/items/coreg_campaigns?limit=-1&fields=cid,sponsor`,
+        `${DIRECTUS_URL}/items/coreg_campaigns?limit=-1&fields=cid,Sponsor`,
         { headers: { Authorization: `Bearer ${DIRECTUS_TOKEN}` } }
       ),
+
+      // coreg_answers → cid + Label (MET hoofdletter L)
       fetch(
-        `${DIRECTUS_URL}/items/coreg_answers?limit=-1&fields=cid,label`,
+        `${DIRECTUS_URL}/items/coreg_answers?limit=-1&fields=cid,Label`,
         { headers: { Authorization: `Bearer ${DIRECTUS_TOKEN}` } }
       ),
     ]);
@@ -89,92 +93,97 @@ export default async function handler(req, res) {
     const cc = ccJson.data || [];
     const ca = caJson.data || [];
 
-    // -------- 3. Sponsor-maps op cid --------
+    // -------------------------------------
+    // 3. Maps bouwen voor snelle lookup
+    // -------------------------------------
     const coMap = Object.fromEntries(
       co
         .filter((s) => s && s.cid != null)
-        .map((s) => [String(s.cid), s.title || ''])
+        .map((s) => [String(s.cid), s.title?.trim() || ""])
     );
 
     const ccMap = Object.fromEntries(
       cc
         .filter((s) => s && s.cid != null)
-        .map((s) => [String(s.cid), s.sponsor || ''])
+        .map((s) => [String(s.cid), s.Sponsor?.trim() || ""])
     );
 
     const caMap = Object.fromEntries(
       ca
         .filter((s) => s && s.cid != null)
-        .map((s) => [String(s.cid), s.label || ''])
+        .map((s) => [String(s.cid), s.Label?.trim() || ""])
     );
 
-    // -------- 4. Flatten rows --------
+    // -------------------------------------
+    // 4. Flatten rows + sponsornaam bepalen
+    // -------------------------------------
     const rows = leads.map((item) => {
-      const cid = item.campaign_id != null ? String(item.campaign_id) : '';
-      const created = item.day || (item.created_at || '').slice(0, 10);
+      const cid = item.campaign_id != null ? String(item.campaign_id) : "";
+      const created = item.day || (item.created_at || "").slice(0, 10);
 
       const sponsor_name =
-        (ccMap[cid] && ccMap[cid].trim()) ||        // coreg_campaigns.sponsor
-        (caMap[cid] && caMap[cid].trim()) ||        // coreg_answers.label
-        (coMap[cid] && coMap[cid].trim()) ||        // co_sponsors.title
+        ccMap[cid] || // beste optie
+        caMap[cid] || // tweede optie
+        coMap[cid] || // fallback
         "";
 
       return {
-        date: created || '',
+        date: created || "",
         campaign_id: cid,
-        offer_id: item.offer_id || '',
-        affiliate_id: item.affiliate_id || '',
-        supplier_id: item.supplier_id || '',
-        sub_id: item.sub_id || '',
+        offer_id: item.offer_id || "",
+        affiliate_id: item.affiliate_id || "",
+        supplier_id: item.supplier_id || "",
+        sub_id: item.sub_id || "",
         sponsor_name,
         cost: toNumber(item.cost),
         revenue: toNumber(item.revenue),
-        currency: item.currency || 'EUR',
+        currency: item.currency || "EUR",
         leads: 1,
-        t_id: item.t_id || '',
-        status: item.status || '',
-        lead_id: item.lead_id || '',
+        t_id: item.t_id || "",
+        status: item.status || "",
+        lead_id: item.lead_id || "",
       };
     });
 
-    // -------- 5. Output: JSON of CSV --------
-    const isCsv = String(format || '').toLowerCase() === 'csv';
+    // -------------------------------------
+    // 5. JSON or CSV output
+    // -------------------------------------
+    const isCsv = String(format || "").toLowerCase() === "csv";
 
     if (!isCsv) {
-      // standaard JSON (handig voor testen of andere integraties)
-      res.setHeader('Content-Type', 'application/json; charset=utf-8');
-      res.status(200).json(rows);
-      return;
+      return res.status(200).json(rows);
     }
 
-    // CSV voor Looker Studio / andere BI tools
     const columns = [
-      'date',
-      'campaign_id',
-      'offer_id',
-      'affiliate_id',
-      'supplier_id',
-      'sub_id',
-      'sponsor_name',
-      'cost',
-      'revenue',
-      'currency',
-      'leads',
-      't_id',
-      'status',
-      'lead_id',
+      "date",
+      "campaign_id",
+      "offer_id",
+      "affiliate_id",
+      "supplier_id",
+      "sub_id",
+      "sponsor_name",
+      "cost",
+      "revenue",
+      "currency",
+      "leads",
+      "t_id",
+      "status",
+      "lead_id",
     ];
 
     const csv = toCSV(rows, columns);
-    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.setHeader('Content-Disposition', 'inline; filename="looker-leads.csv"');
-    res.status(200).send(csv);
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader(
+      "Content-Disposition",
+      'inline; filename="looker-leads.csv"'
+    );
+    return res.status(200).send(csv);
   } catch (err) {
-    console.error('[looker-leads] error:', err);
+    console.error("[looker-leads] error:", err);
     if (!res.headersSent) {
-      res
-        .status(500)
-        .json({ error: String(err && err.message ? err.message : err) });
+      res.status(500).json({
+        error: String(err?.message || err),
+      });
     }
   }
 }
