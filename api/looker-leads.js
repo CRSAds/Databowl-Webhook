@@ -114,10 +114,10 @@ export default async function handler(req, res) {
       const created = item.day || (item.created_at || '').slice(0, 10);
 
       const sponsor_name =
-        ccMap[cid] || // coreg_campaigns.sponsor
-        caMap[cid] || // coreg_answers.label
-        coMap[cid] || // co_sponsors.title
-        '';
+        (ccMap[cid] && ccMap[cid].trim()) ||        // coreg_campaigns.sponsor
+        (caMap[cid] && caMap[cid].trim()) ||        // coreg_answers.label
+        (coMap[cid] && coMap[cid].trim()) ||        // co_sponsors.title
+        "";
 
       return {
         date: created || '',
