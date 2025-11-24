@@ -190,7 +190,7 @@ function mapPayload(body) {
   };
 }
 
-// Directus create (met unique event_key afhandeling)
+// Directus create (alleen voor coreg leads)
 async function createEventDirectus(event) {
   const r = await fetch(`${DIRECTUS_URL}/items/Lead_omzet`, {
     method: 'POST',
@@ -210,13 +210,11 @@ async function createEventDirectus(event) {
       (e) => e?.extensions?.code === 'RECORD_NOT_UNIQUE'
     );
     if (nonUnique) return { skipped: true };
-  } catch {
-    // ignore
-  }
+  } catch {}
   throw new Error(`Directus create ${r.status}: ${txt}`);
 }
 
-// Supabase insert (best-effort; mag falen)
+// Supabase insert (shortform + coreg)
 async function insertSupabase(event) {
   if (!supabase) return { skipped: 'no_supabase_config' };
 
@@ -235,6 +233,7 @@ async function insertSupabase(event) {
     t_id: event.t_id || null,
     created_at: event.created_at || new Date().toISOString(),
     day: event.day || event.created_at?.slice(0, 10),
+    is_shortform: event.is_shortform || false,
   });
 
   if (error) throw error;
@@ -242,7 +241,7 @@ async function insertSupabase(event) {
 }
 
 export default async function handler(req, res) {
-  // CORS voor browser-testen
+  // CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
@@ -253,9 +252,8 @@ export default async function handler(req, res) {
       return res.status(405).json({ error: 'Method not allowed' });
 
     const secret = req.query?.secret;
-    if (!secret || secret !== SHARED_SECRET) {
+    if (!secret || secret !== SHARED_SECRET)
       return res.status(401).json({ error: 'Invalid secret' });
-    }
 
     const body =
       req.body && Object.keys(req.body).length
@@ -273,40 +271,44 @@ export default async function handler(req, res) {
           });
 
     const event = mapPayload(body);
-    if (!event.lead_id) {
-      return res.status(400).json({ error: 'Missing lead_id in payload' });
-    }
 
-    // DAY veld voor rapportage
+    if (!event.lead_id)
+      return res.status(400).json({ error: 'Missing lead_id' });
+
+    // DAY veld
     event.day = event.created_at.slice(0, 10);
 
-    // alleen leads met cost > 0 opslaan
-    const costNum = event.cost != null ? Number(event.cost) : 0;
-    if (!costNum || costNum <= 0) {
-      return res
-        .status(200)
-        .json({ skipped: true, reason: 'no_cost_yet' });
+    // Detect shortform (campagne 925)
+    if (event.campaign_id === '925') {
+      event.is_shortform = true;
+      event.cost = 0;
+      event.revenue = 0;
+    }
+
+    // Skip Directus insert voor shortform
+    let directusResult = { skipped: 'shortform' };
+    if (!event.is_shortform) {
+      directusResult = await createEventDirectus(event);
     }
 
     // Idempotency key
     const event_key = makeKey(event);
     event.event_key = event_key;
-    event.raw = { ...(event.raw || {}), key: event_key };
 
-    // 1) Directus blijft de bron
-    const directusResult = await createEventDirectus(event);
-
-    // 2) Supabase best-effort
+    // Supabase opslag (alles)
     try {
       await insertSupabase(event);
     } catch (e) {
-      console.error('[databowl-webhook] Supabase insert failed:', e);
-      // geen throw: Directus opslag mag niet omvallen door Supabase
+      console.error('[Supabase insert failed]', e);
     }
 
-    return res.status(200).json({ ok: true, directus: directusResult });
+    return res.status(200).json({
+      ok: true,
+      directus: directusResult,
+      shortform: event.is_shortform || false,
+    });
   } catch (e) {
-    console.error('[databowl-webhook] error:', e);
+    console.error('[databowl-webhook error]', e);
     return res.status(500).json({ error: String(e?.message || e) });
   }
 }
