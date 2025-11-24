@@ -218,6 +218,9 @@ async function createEventDirectus(event) {
 async function insertSupabase(event) {
   if (!supabase) return { skipped: 'no_supabase_config' };
 
+  // shortform = alleen campagne 925
+  const is_shortform = event.campaign_id === '925' ? true : null;
+
   const { error } = await supabase.from('lead_omzet').insert({
     event_key: event.event_key || null,
     lead_id: event.lead_id || null,
@@ -233,7 +236,9 @@ async function insertSupabase(event) {
     t_id: event.t_id || null,
     created_at: event.created_at || new Date().toISOString(),
     day: event.day || event.created_at?.slice(0, 10),
-    is_shortform: event.is_shortform || false,
+
+    // 👇 Nieuwe kolom (NULL voor alles behalve campaign 925)
+    is_shortform,
   });
 
   if (error) throw error;
