@@ -1,16 +1,32 @@
 // api/databowl-webhook.js
 import crypto from 'crypto';
+import { createClient } from '@supabase/supabase-js';
 
 // === ENV ===
 const DIRECTUS_URL = (process.env.DIRECTUS_URL || '').replace(/\/+$/, '');
 const DIRECTUS_TOKEN = process.env.DIRECTUS_TOKEN || '';
 const SHARED_SECRET = process.env.DATABOWL_WEBHOOK_SECRET || '';
 
+// Supabase
+const SUPABASE_URL = process.env.SUPABASE_URL || '';
+const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE || '';
+
+const supabase =
+  SUPABASE_URL && SUPABASE_SERVICE_ROLE
+    ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE, {
+        auth: { persistSession: false },
+      })
+    : null;
+
 // === Utils ===
-const normMoney = (v) => (v == null || v === '' ? null : Number.parseFloat(v).toFixed(2));
+const normMoney = (v) =>
+  v == null || v === '' ? null : Number.parseFloat(v).toFixed(2);
+
 const asISOFromUnix = (s) => {
   const n = Number(s);
-  return Number.isFinite(n) ? new Date(n * 1000).toISOString() : new Date().toISOString();
+  return Number.isFinite(n)
+    ? new Date(n * 1000).toISOString()
+    : new Date().toISOString();
 };
 
 // Pas aan zodra je nummers definitief zijn in Databowl
@@ -49,7 +65,7 @@ function makeKey(obj) {
   return h.digest('hex');
 }
 
-// Mapping Databowl payload → Directus item
+// Mapping Databowl payload → event object
 function mapPayload(body) {
   const b = body || {};
 
@@ -59,30 +75,41 @@ function mapPayload(body) {
     const data = p.data || {};
 
     const lead_id = p.leadId ?? null;
-    const campaign_id = p.campaignId != null ? String(p.campaignId) : null;
-    const supplier_id = p.supplierId != null ? String(p.supplierId) : null;
+    const campaign_id =
+      p.campaignId != null ? String(p.campaignId) : null;
+    const supplier_id =
+      p.supplierId != null ? String(p.supplierId) : null;
 
     const offer_id = FIELD_IDS.offer_id ? data[FIELD_IDS.offer_id] ?? null : null;
-    const affiliate_id = FIELD_IDS.affiliate_id ? data[FIELD_IDS.affiliate_id] ?? null : null;
+    const affiliate_id = FIELD_IDS.affiliate_id
+      ? data[FIELD_IDS.affiliate_id] ?? null
+      : null;
     const sub_id = FIELD_IDS.sub_id ? data[FIELD_IDS.sub_id] ?? null : null;
     const t_id = FIELD_IDS.t_id ? data[FIELD_IDS.t_id] ?? null : null;
 
     const statusId = p.statusId != null ? String(p.statusId) : null;
-    const status = statusId ? (STATUS_MAP[statusId] || `Unknown (${String(statusId)})`) : 'unknown';
+    const status = statusId
+      ? STATUS_MAP[statusId] || `Unknown (${String(statusId)})`
+      : 'unknown';
 
-    const created_at = p.receivedAt ? asISOFromUnix(p.receivedAt) : new Date().toISOString();
+    const created_at = p.receivedAt
+      ? asISOFromUnix(p.receivedAt)
+      : new Date().toISOString();
     const revenue = normMoney(p.normalRevenue ?? p.revenue);
     const cost = normMoney(p.normalCost ?? p.cost);
     const currency = 'EUR';
 
     const email = data?.['1'] || null;
     const email_hash = email
-      ? crypto.createHash('sha256').update(String(email).toLowerCase()).digest('hex')
+      ? crypto
+          .createHash('sha256')
+          .update(String(email).toLowerCase())
+          .digest('hex')
       : null;
 
     return {
       lead_id,
-      status, // leesbaar label
+      status,
       revenue,
       cost,
       currency,
@@ -93,7 +120,7 @@ function mapPayload(body) {
       sub_id,
       t_id,
       created_at,
-      raw: { original: b, email_hash, status_id: statusId }, // numerieke code blijft beschikbaar
+      raw: { original: b, email_hash, status_id: statusId },
     };
   }
 
@@ -104,31 +131,46 @@ function mapPayload(body) {
   const meta = b.meta || b.metadata || {};
 
   const statusRaw = msg.status ?? b.status ?? ld.status ?? null;
-  // Als numeriek (string/number) → map, anders gebruik raw tekst
   const status =
     statusRaw != null && String(Number(statusRaw)) === String(statusRaw)
       ? STATUS_MAP[String(statusRaw)] || `Unknown (${String(statusRaw)})`
       : statusRaw || 'unknown';
 
-  const created_at = msg.created_at ?? ld.created_at ?? b.created_at ?? new Date().toISOString();
+  const created_at =
+    msg.created_at ??
+    ld.created_at ??
+    b.created_at ??
+    new Date().toISOString();
 
   const revenue = normMoney(fin.revenue ?? b.revenue ?? ld.revenue);
   const cost = normMoney(fin.cost ?? b.cost ?? ld.cost);
   const currency = (fin.currency ?? b.currency ?? 'EUR') || 'EUR';
 
   const offer_id = ld.offer_id ?? b.offer_id ?? meta.offer_id ?? null;
-  const campaign_id = ld.campaign_id ?? b.campaign_id ?? meta.campaign_id ?? null;
-  const supplier_id = ld.supplier_id ?? b.supplier_id ?? meta.supplier_id ?? null;
-  const affiliate_id = ld.affiliate_id ?? b.affiliate_id ?? meta.affiliate_id ?? null;
-  const sub_id = ld.sub_id ?? ld.subid ?? b.sub_id ?? meta.sub_id ?? null;
-  const t_id = (FIELD_IDS.t_id && (ld[FIELD_IDS.t_id] || (b.data && b.data[FIELD_IDS.t_id])))
-    ?? ld.t_id ?? b.t_id ?? meta.t_id ?? null;
+  const campaign_id =
+    ld.campaign_id ?? b.campaign_id ?? meta.campaign_id ?? null;
+  const supplier_id =
+    ld.supplier_id ?? b.supplier_id ?? meta.supplier_id ?? null;
+  const affiliate_id =
+    ld.affiliate_id ?? b.affiliate_id ?? meta.affiliate_id ?? null;
+  const sub_id =
+    ld.sub_id ?? ld.subid ?? b.sub_id ?? meta.sub_id ?? null;
+  const t_id =
+    (FIELD_IDS.t_id &&
+      (ld[FIELD_IDS.t_id] || (b.data && b.data[FIELD_IDS.t_id]))) ??
+    ld.t_id ??
+    b.t_id ??
+    meta.t_id ??
+    null;
 
   const lead_id = ld.id ?? b.lead_id ?? msg.lead_id ?? null;
 
   const email = ld.email ?? b.email ?? null;
   const email_hash = email
-    ? crypto.createHash('sha256').update(String(email).toLowerCase()).digest('hex')
+    ? crypto
+        .createHash('sha256')
+        .update(String(email).toLowerCase())
+        .digest('hex')
     : null;
 
   return {
@@ -149,7 +191,7 @@ function mapPayload(body) {
 }
 
 // Directus create (met unique event_key afhandeling)
-async function createEvent(event) {
+async function createEventDirectus(event) {
   const r = await fetch(`${DIRECTUS_URL}/items/Lead_omzet`, {
     method: 'POST',
     headers: {
@@ -161,16 +203,42 @@ async function createEvent(event) {
 
   if (r.ok) return { created: await r.json() };
 
-  // Unieke constraint? → skip
   let txt = await r.text();
   try {
     const j = JSON.parse(txt);
-    const nonUnique = j?.errors?.some((e) => e?.extensions?.code === 'RECORD_NOT_UNIQUE');
+    const nonUnique = j?.errors?.some(
+      (e) => e?.extensions?.code === 'RECORD_NOT_UNIQUE'
+    );
     if (nonUnique) return { skipped: true };
   } catch {
     // ignore
   }
   throw new Error(`Directus create ${r.status}: ${txt}`);
+}
+
+// Supabase insert (best-effort; mag falen)
+async function insertSupabase(event) {
+  if (!supabase) return { skipped: 'no_supabase_config' };
+
+  const { error } = await supabase.from('lead_omzet').insert({
+    event_key: event.event_key || null,
+    lead_id: event.lead_id || null,
+    status: event.status || null,
+    revenue: event.revenue != null ? Number(event.revenue) : null,
+    cost: event.cost != null ? Number(event.cost) : null,
+    currency: event.currency || 'EUR',
+    offer_id: event.offer_id || null,
+    campaign_id: event.campaign_id || null,
+    supplier_id: event.supplier_id || null,
+    affiliate_id: event.affiliate_id || null,
+    sub_id: event.sub_id || null,
+    t_id: event.t_id || null,
+    created_at: event.created_at || new Date().toISOString(),
+    day: event.day || event.created_at?.slice(0, 10),
+  });
+
+  if (error) throw error;
+  return { inserted: true };
 }
 
 export default async function handler(req, res) {
@@ -181,7 +249,8 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
 
   try {
-    if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+    if (req.method !== 'POST')
+      return res.status(405).json({ error: 'Method not allowed' });
 
     const secret = req.query?.secret;
     if (!secret || secret !== SHARED_SECRET) {
@@ -195,7 +264,11 @@ export default async function handler(req, res) {
             let d = '';
             req.on('data', (c) => (d += c));
             req.on('end', () => {
-              try { resolve(JSON.parse(d || '{}')); } catch { resolve({}); }
+              try {
+                resolve(JSON.parse(d || '{}'));
+              } catch {
+                resolve({});
+              }
             });
           });
 
@@ -204,33 +277,34 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: 'Missing lead_id in payload' });
     }
 
-    // 🆕 Add DAY field (YYYY-MM-DD) for Insights
+    // DAY veld voor rapportage
     event.day = event.created_at.slice(0, 10);
 
-    // 🔹 NIEUW: alleen leads met cost opslaan
+    // alleen leads met cost > 0 opslaan
     const costNum = event.cost != null ? Number(event.cost) : 0;
     if (!costNum || costNum <= 0) {
-      return res.status(200).json({ skipped: true, reason: 'no_cost_yet' });
+      return res
+        .status(200)
+        .json({ skipped: true, reason: 'no_cost_yet' });
     }
 
-    // Idempotency via unieke kolom event_key (zonder read)
+    // Idempotency key
     const event_key = makeKey(event);
-    event.event_key = event_key; // <-- vereist veld in Directus, Unique
+    event.event_key = event_key;
     event.raw = { ...(event.raw || {}), key: event_key };
 
-    const result = await createEvent(event);
+    // 1) Directus blijft de bron
+    const directusResult = await createEventDirectus(event);
 
-    // optionele debug header als je ?debug=1 meestuurt
-    if (req.query?.debug === '1') {
-      res.setHeader('X-Databowl-Debug', JSON.stringify({
-        lead_id: event.lead_id,
-        event_key,
-        created: !!result.created,
-        skipped: !!result.skipped
-      }));
+    // 2) Supabase best-effort
+    try {
+      await insertSupabase(event);
+    } catch (e) {
+      console.error('[databowl-webhook] Supabase insert failed:', e);
+      // geen throw: Directus opslag mag niet omvallen door Supabase
     }
 
-    return res.status(200).json({ ok: true, ...result });
+    return res.status(200).json({ ok: true, directus: directusResult });
   } catch (e) {
     console.error('[databowl-webhook] error:', e);
     return res.status(500).json({ error: String(e?.message || e) });
