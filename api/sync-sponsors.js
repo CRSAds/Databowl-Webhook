@@ -1,4 +1,4 @@
-// /api/sync-sponsors.js
+// /api/sync-all-sponsors.js
 import { createClient } from "@supabase/supabase-js";
 
 const DIRECTUS_URL = process.env.DIRECTUS_URL;
@@ -12,9 +12,10 @@ const sb = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE, {
 });
 
 async function fetchDirectus(path) {
-  const r = await fetch(`${DIRECTUS_URL}/items/${path}?limit=-1`, {
+  const r = await fetch(`${DIRECTUS_URL}${path}`, {
     headers: { Authorization: `Bearer ${DIRECTUS_TOKEN}` },
   });
+
   const json = await r.json();
   return json.data || [];
 }
@@ -27,32 +28,32 @@ export default async function handler(req, res) {
     if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE)
       return res.status(500).json({ error: "Missing Supabase vars" });
 
-    // 1) Haal ALLE sponsorvarianten op
+    // 1) Haal ALLE sponsors op uit ALLE tabellen
     const [co, cc, ca] = await Promise.all([
-      fetchDirectus("co_sponsors?fields=cid,title"),
-      fetchDirectus("coreg_campaigns?fields=cid,sponsor"),
-      fetchDirectus("coreg_answers?fields=cid,label"),
+      fetchDirectus(`/items/co_sponsors?limit=-1&fields=cid,title`),
+      fetchDirectus(`/items/coreg_campaigns?limit=-1&fields=cid,sponsor`),
+      fetchDirectus(`/items/coreg_answers?limit=-1&fields=cid,label`),
     ]);
 
-    // 2) Maak mapping: zelfde CID -> juiste naam
-    const rows = [];
+    // 2) Map alle bronnen naar één uniforme vorm
+    const rows = [
+      ...co.map((s) => ({
+        cid: String(s.cid),
+        sponsor_name: s.title || "",
+      })),
+      ...cc.map((s) => ({
+        cid: String(s.cid),
+        sponsor_name: s.sponsor || "",
+      })),
+      ...ca.map((s) => ({
+        cid: String(s.cid),
+        sponsor_name: s.label || "",
+      })),
+    ]
+      // filter lege cid's eruit
+      .filter((r) => r.cid && r.sponsor_name);
 
-    co.forEach((s) => {
-      if (s.cid)
-        rows.push({ cid: String(s.cid), sponsor_name: s.title || "" });
-    });
-
-    cc.forEach((s) => {
-      if (s.cid)
-        rows.push({ cid: String(s.cid), sponsor_name: s.sponsor || "" });
-    });
-
-    ca.forEach((s) => {
-      if (s.cid)
-        rows.push({ cid: String(s.cid), sponsor_name: s.label || "" });
-    });
-
-    // 3) Upsert ALLE data
+    // 3) Upsert in Supabase
     const { error } = await sb
       .from("sponsor_lookup")
       .upsert(rows, { onConflict: "cid" });
@@ -61,10 +62,16 @@ export default async function handler(req, res) {
 
     return res.status(200).json({
       ok: true,
+      fetched: {
+        co_sponsors: co.length,
+        coreg_campaigns: cc.length,
+        coreg_answers: ca.length,
+      },
       inserted: rows.length,
     });
+
   } catch (err) {
-    console.error(err);
+    console.error("[sync-all-sponsors] error:", err);
     return res.status(500).json({ error: String(err.message || err) });
   }
 }
