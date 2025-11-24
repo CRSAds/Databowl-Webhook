@@ -19,12 +19,12 @@ export default async function handler(req, res) {
     if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE)
       return res.status(500).json({ error: "Missing Supabase vars" });
 
-    // 1) Ophalen Directus data
+    // ---- 1) Directus Data Ophalen ----
     const [coRes, ccRes, caRes] = await Promise.all([
       fetch(`${DIRECTUS_URL}/items/co_sponsors?limit=-1&fields=cid,title`, {
         headers: { Authorization: `Bearer ${DIRECTUS_TOKEN}` },
       }),
-      fetch(`${DIRECTUS_URL}/items/coreg_campaigns?limit=-1&fields=cid,sponsor`, {
+      fetch(`${DIRECTUS_URL}/items/coreg_campaigns?limit=-1&fields=cid,Sponsor,sponsor`, {
         headers: { Authorization: `Bearer ${DIRECTUS_TOKEN}` },
       }),
       fetch(`${DIRECTUS_URL}/items/coreg_answers?limit=-1&fields=cid,label`, {
@@ -36,17 +36,34 @@ export default async function handler(req, res) {
     const cc = (await ccRes.json()).data || [];
     const ca = (await caRes.json()).data || [];
 
-    // 2) Mappen naar uniform formaat
+    // ---- 2) Normaliseren → zelfde structuur ----
     const rows = [
-      ...co.map(s => ({ cid: String(s.cid), sponsor_name: s.title || "" })),
-      ...cc.map(s => ({ cid: String(s.cid), sponsor_name: s.sponsor || "" })),
-      ...ca.map(s => ({ cid: String(s.cid), sponsor_name: s.label || "" })),
+      // co_sponsors
+      ...co.map(s => ({
+        cid: String(s.cid),
+        sponsor_name: s.title || "",
+      })),
+
+      // coreg_campaigns
+      ...cc.map(s => ({
+        cid: String(s.cid),
+        sponsor_name: 
+          s.Sponsor ||        // hoofdletter veld (jouw Directus setup)
+          s.sponsor ||        // fallback lowercase
+          "",
+      })),
+
+      // coreg_answers
+      ...ca.map(s => ({
+        cid: String(s.cid),
+        sponsor_name: s.label || "",
+      })),
     ];
 
-    // Remove lege namen
-    const cleaned = rows.filter(r => r.sponsor_name.trim() !== "");
+    // ---- 3) Lege namen eruit ----
+    const cleaned = rows.filter(r => r.sponsor_name && r.sponsor_name.trim() !== "");
 
-    // Remove duplicates (laatste wint)
+    // ---- 4) Duplicaten verwijderen (laatste overwint) ----
     const unique = Object.values(
       cleaned.reduce((acc, item) => {
         acc[item.cid] = item;
@@ -54,7 +71,7 @@ export default async function handler(req, res) {
       }, {})
     );
 
-    // 3) Upsert naar Supabase
+    // ---- 5) Upsert in Supabase ----
     const { error } = await sb
       .from("sponsor_lookup")
       .upsert(unique, { onConflict: "cid" });
@@ -70,6 +87,7 @@ export default async function handler(req, res) {
       },
       unique_sponsors: unique.length,
     });
+
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: String(err.message || err) });
