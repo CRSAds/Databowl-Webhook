@@ -141,9 +141,13 @@ async function createEventDirectus(event) {
   throw new Error(`Directus create ${r.status}: ${txt}`);
 }
 
-// ==== SUPABASE INSERT ====
+// Supabase insert (shortform + coreg)
 async function insertSupabase(event) {
   if (!supabase) return { skipped: 'no_supabase_config' };
+
+  // SHORTFORM LOGIC:
+  // Campagne 925 = short form
+  const isShort = event.campaign_id === '925' ? 1 : 0;
 
   const { error } = await supabase.from('lead_omzet').insert({
     event_key: event.event_key || null,
@@ -159,8 +163,10 @@ async function insertSupabase(event) {
     sub_id: event.sub_id || null,
     t_id: event.t_id || null,
     created_at: event.created_at || new Date().toISOString(),
-    day: event.day,
-    is_shortform: event.is_shortform ? 1 : 0,
+    day: event.day || event.created_at?.slice(0, 10),
+
+    // BOEM—altijd integer, nooit meer tekst:
+    is_shortform: isShort,
   });
 
   if (error) throw error;
