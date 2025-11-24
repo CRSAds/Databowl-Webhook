@@ -31,7 +31,7 @@ export default async function handler(req, res) {
     // 1️⃣ Haal alle drie bronnen op
     const [co, cc, ca] = await Promise.all([
       getDirectus("co_sponsors"),        // fields: cid, title
-      getDirectus("coreg_campaigns"),    // fields: cid, sponsor
+      getDirectus("coreg_campaigns"),    // fields: cid, Sponsor
       getDirectus("coreg_answers"),      // fields: cid, label
     ]);
 
