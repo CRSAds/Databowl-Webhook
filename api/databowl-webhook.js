@@ -145,9 +145,13 @@ async function createEventDirectus(event) {
 async function insertSupabase(event) {
   if (!supabase) return { skipped: 'no_supabase_config' };
 
-  // SHORTFORM LOGIC:
-  // Campagne 925 = short form
-  const isShort = event.campaign_id === '925' ? 1 : 0;
+  // --- ENFORCE: always convert to numeric 1/0 ---
+  const sf =
+    event.is_shortform === true ||
+    event.is_shortform === "true" ||
+    event.campaign_id === "925"
+      ? 1
+      : 0;
 
   const { error } = await supabase.from('lead_omzet').insert({
     event_key: event.event_key || null,
@@ -165,8 +169,8 @@ async function insertSupabase(event) {
     created_at: event.created_at || new Date().toISOString(),
     day: event.day || event.created_at?.slice(0, 10),
 
-    // BOEM—altijd integer, nooit meer tekst:
-    is_shortform: isShort,
+    // ← ALWAYS FORCE 1 / 0
+    is_shortform: sf
   });
 
   if (error) throw error;
