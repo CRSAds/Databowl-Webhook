@@ -1,45 +1,52 @@
+// /api/sync-sponsors.js
+import { createClient } from "@supabase/supabase-js";
+
+const DIRECTUS_URL = process.env.DIRECTUS_URL;
+const DIRECTUS_TOKEN = process.env.DIRECTUS_TOKEN;
+
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE;
+
+const sb = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE, {
+  auth: { persistSession: false },
+});
+
 export default async function handler(req, res) {
   try {
-    const DIRECTUS_URL = process.env.DIRECTUS_URL;
-    const DIRECTUS_TOKEN = process.env.DIRECTUS_TOKEN;
-    const SUPABASE_URL = process.env.SUPABASE_URL;
-    const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE;
+    if (!DIRECTUS_URL || !DIRECTUS_TOKEN)
+      return res.status(500).json({ error: "Missing Directus vars" });
 
-    const { createClient } = await import("@supabase/supabase-js");
-    const sb = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE);
+    if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE)
+      return res.status(500).json({ error: "Missing Supabase vars" });
 
-    // Fetch 3 sources
-    const endpoints = [
-      ["co_sponsors", "title"],
-      ["coreg_campaigns", "sponsor"],
-      ["coreg_answers", "label"],
-    ];
+    // 1) Ophalen vanuit Directus
+    const r = await fetch(
+      `${DIRECTUS_URL}/items/co_sponsors?limit=-1&fields=cid,title`,
+      { headers: { Authorization: `Bearer ${DIRECTUS_TOKEN}` } }
+    );
 
-    const merged = {};
+    const json = await r.json();
+    const sponsors = json.data || [];
 
-    for (const [collection, field] of endpoints) {
-      const r = await fetch(`${DIRECTUS_URL}/items/${collection}?limit=-1`, {
-        headers: { Authorization: `Bearer ${DIRECTUS_TOKEN}` }
-      });
-
-      const json = await r.json();
-      for (const row of json.data || []) {
-        if (!row.cid) continue;
-        merged[String(row.cid)] = row[field] || null;
-      }
-    }
-
-    // Upsert in Supabase
-    const payload = Object.entries(merged).map(([cid, name]) => ({
-      cid,
-      sponsor_name: name
+    // 2) Mappen naar Supabase formaat
+    const rows = sponsors.map((s) => ({
+      cid: String(s.cid),
+      sponsor_name: s.title || "",
     }));
 
-    const { error } = await sb.from("sponsor_lookup").upsert(payload);
+    // 3) Upsert in Supabase
+    const { data, error } = await sb
+      .from("sponsor_lookup")
+      .upsert(rows, { onConflict: "cid" });
+
     if (error) throw error;
 
-    return res.status(200).json({ ok: true, inserted: payload.length });
-  } catch (e) {
-    return res.status(500).json({ error: String(e) });
+    return res.status(200).json({
+      ok: true,
+      inserted: rows.length,
+    });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: String(err.message || err) });
   }
 }
