@@ -1,4 +1,4 @@
-// /api/sync-sponsors.js
+// /api/sync-all-sponsors.js
 import { createClient } from "@supabase/supabase-js";
 
 const DIRECTUS_URL = process.env.DIRECTUS_URL;
@@ -11,7 +11,8 @@ const sb = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE, {
   auth: { persistSession: false },
 });
 
-async function fetchDirectus(path) {
+// Helper: fetch collectie uit Directus
+async function getDirectus(path) {
   const r = await fetch(`${DIRECTUS_URL}/items/${path}?limit=-1`, {
     headers: { Authorization: `Bearer ${DIRECTUS_TOKEN}` },
   });
@@ -21,43 +22,61 @@ async function fetchDirectus(path) {
 
 export default async function handler(req, res) {
   try {
-    // ====== 1. Ophalen uit Directus ======
-    const coSponsors = await fetchDirectus("co_sponsors?fields=cid,title");
-    const coregCampaigns = await fetchDirectus("coreg_campaigns?fields=cid,sponsor");
-    const coregAnswers = await fetchDirectus("coreg_answers?fields=cid,label");
+    if (!DIRECTUS_URL || !DIRECTUS_TOKEN)
+      return res.status(500).json({ error: "Missing Directus vars" });
 
-    // ====== 2. Upsert per collectie ======
+    if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE)
+      return res.status(500).json({ error: "Missing Supabase vars" });
 
-    // A) co_sponsors
-    const rowsA = coSponsors.map(s => ({
-      cid: String(s.cid),
-      sponsor_name: s.title || ""
-    }));
-    if (rowsA.length) {
-      await sb.from("sponsor_lookup").upsert(rowsA, { onConflict: "cid" });
+    // 1️⃣ Haal alle drie bronnen op
+    const [co, cc, ca] = await Promise.all([
+      getDirectus("co_sponsors"),        // fields: cid, title
+      getDirectus("coreg_campaigns"),    // fields: cid, sponsor
+      getDirectus("coreg_answers"),      // fields: cid, label
+    ]);
+
+    // 2️⃣ Combineer alle bronnen in één array
+    let combined = [
+      ...co.map(s => ({
+        cid: String(s.cid),
+        sponsor_name: s.title || ""
+      })),
+      ...cc.map(s => ({
+        cid: String(s.cid),
+        sponsor_name: s.sponsor || ""
+      })),
+      ...ca.map(s => ({
+        cid: String(s.cid),
+        sponsor_name: s.label || ""
+      })),
+    ];
+
+    // 3️⃣ Filter lege namen eruit
+    combined = combined.filter(s => s.sponsor_name.trim() !== "");
+
+    // 4️⃣ Unieke cid’s bewaren (eerste naam wint)
+    const map = new Map();
+    for (const row of combined) {
+      if (!map.has(row.cid)) map.set(row.cid, row);
     }
 
-    // B) coreg_campaigns
-    const rowsB = coregCampaigns.map(s => ({
-      cid: String(s.cid),
-      sponsor_name: s.sponsor || ""
-    }));
-    if (rowsB.length) {
-      await sb.from("sponsor_lookup").upsert(rowsB, { onConflict: "cid" });
-    }
+    const finalList = [...map.values()];
 
-    // C) coreg_answers
-    const rowsC = coregAnswers.map(s => ({
-      cid: String(s.cid),
-      sponsor_name: s.label || ""
-    }));
-    if (rowsC.length) {
-      await sb.from("sponsor_lookup").upsert(rowsC, { onConflict: "cid" });
-    }
+    // 5️⃣ Upsert in Supabase
+    const { error } = await sb
+      .from("sponsor_lookup")
+      .upsert(finalList, { onConflict: "cid" });
+
+    if (error) throw error;
 
     return res.status(200).json({
       ok: true,
-      inserted: rowsA.length + rowsB.length + rowsC.length
+      sources: {
+        co_sponsors: co.length,
+        coreg_campaigns: cc.length,
+        coreg_answers: ca.length,
+      },
+      unique_sponsors: finalList.length,
     });
 
   } catch (err) {
